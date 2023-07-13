@@ -1,0 +1,52 @@
+cabal-version:      3.4
+name:               llama-cpp-bindings
+version:            0.1.0.0
+-- A short (one-line) description of the package.
+-- synopsis:
+
+-- A longer description of the package.
+-- description:
+license:            AGPL-3.0-only
+license-file:       LICENSE
+author:             Dave Della Costa
+maintainer:         ddellacosta@gmail.com
+category:           Development
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+-- extra-source-files: llama.cpp 
+
+common shared
+  ghc-options: -Wall
+
+  build-depends:
+    base ^>= 4.17.1.0
+    
+library
+  import:              shared
+  build-tool-depends:  c2hs:c2hs
+  -- so apparently how this works w/nix involved is that it looks up
+  -- the library name via the string following `lib` ...I think?
+  -- https://github.com/NixOS/cabal2nix/issues/378#issuecomment-480563527
+  extra-libraries:
+    llama
+    stdc++
+  includes:            llama.h
+  exposed-modules:
+    LLaMACPP
+  hs-source-dirs:      src
+  default-language:    GHC2021
+
+executable examples
+  import:              shared
+  build-depends:       llama-cpp-bindings
+  hs-source-dirs:      examples
+  main-is:             Main.hs
+  default-language:    GHC2021
+
+test-suite llama-cpp-bindings-test
+  import:              shared
+  build-depends:       llama-cpp-bindings
+  hs-source-dirs:      test
+  main-is:             Main.hs
+  default-language:    GHC2021
+  type:                exitcode-stdio-1.0
