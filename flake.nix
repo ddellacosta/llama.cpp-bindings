@@ -17,7 +17,11 @@
 
         llama-cpp-with-includes =
           llama-cpp.packages.${system}.default.overrideAttrs (oldAttrs: {
-            postInstallHook = (oldAttrs.postInstallHook or "") + ''
+            postInstall = (oldAttrs.postInstall or "") + ''
+              mkdir -p $out/lib
+              mkdir -p $out/include
+              cp *.a $out/lib/
+              for i in $src/*.h; do cp $i $out/include/; done
             '';
           });
 
@@ -27,7 +31,7 @@
             addBuildTools = (t.flip hl.addBuildTools) (devTools ++ [
               zlib
               haskellPackages.c2hs
-              # llama-cpp.packages.${system}.default
+              llama-cpp-with-includes
             ]);
           in
               haskellPackages.developPackage {
@@ -40,11 +44,10 @@
                 modifier = (t.flip t.pipe) [
                   addBuildTools
                   hl.dontHaddock
-                  # hl.appendBuildFlag "--extra-include-dirs=${llama-cpp.outPath}"
                   (drv: hl.overrideCabal drv (attrs: {
                     configureFlags = [
-                      "--extra-include-dirs=${llama-cpp.packages.${system}.default}/include"
-                      # "--extra-lib-dirs=${llama-cpp.outPath}/lib"
+                      "--extra-include-dirs=${llama-cpp-with-includes}/include"
+                      "--extra-lib-dirs=${llama-cpp-with-includes}/lib"
                     ];
                   }))
                 ];
@@ -54,6 +57,7 @@
         packages = {
           pkg = project [ ]; # [3]
           default = self.packages.${system}.pkg;
+          llama-cpp = llama-cpp-with-includes;
         };
 
         devShell = project (with haskellPackages; [ # [4]
