@@ -15,17 +15,21 @@
 
         name = "llama.cpp-bindings";
 
+        llama-cpp-with-includes =
+          llama-cpp.packages.${system}.default.overrideAttrs (oldAttrs: {
+            postInstallHook = (oldAttrs.postInstallHook or "") + ''
+            '';
+          });
+
         project = devTools:
           let
             _ = builtins.trace (lib.attrNames llama-cpp);
             addBuildTools = (t.flip hl.addBuildTools) (devTools ++ [
               zlib
               haskellPackages.c2hs
-              llama-cpp.packages.${system}.default
+              # llama-cpp.packages.${system}.default
             ]);
           in
-            builtins.trace (llama-cpp.packages.${system}.default.outPath)
-            # builtins.trace (llama-cpp.outPath)
               haskellPackages.developPackage {
                 # this prevents CHANGELOG/LICENSE/etc. from being found
                 # root = lib.sourceFilesBySuffices ./. [ ".cabal" ".hs" ];
@@ -39,17 +43,18 @@
                   # hl.appendBuildFlag "--extra-include-dirs=${llama-cpp.outPath}"
                   (drv: hl.overrideCabal drv (attrs: {
                     configureFlags = [
-                      "--extra-include-dirs=${llama-cpp.outPath}/include"
-                      "--extra-lib-dirs=${llama-cpp.outPath}/lib"
+                      "--extra-include-dirs=${llama-cpp.packages.${system}.default}/include"
+                      # "--extra-lib-dirs=${llama-cpp.outPath}/lib"
                     ];
                   }))
                 ];
               };
 
       in {
-        packages.pkg = project [ ]; # [3]
-
-        defaultPackage = self.packages.${system}.pkg;
+        packages = {
+          pkg = project [ ]; # [3]
+          default = self.packages.${system}.pkg;
+        };
 
         devShell = project (with haskellPackages; [ # [4]
           cabal-fmt
