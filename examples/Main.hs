@@ -3,7 +3,10 @@ module Main where
 
 import qualified LLaMACPP as L
 import Foreign.C.String (withCString)
-import Foreign.Ptr (castPtr)
+import Foreign.Marshal.Alloc (alloca)
+import Foreign.Marshal.Array (allocaArray)
+import Foreign.Ptr (Ptr, castPtr, nullFunPtr, nullPtr)
+import Foreign.Storable (Storable(poke))
 
 main :: IO ()
 main = do
@@ -28,26 +31,50 @@ main = do
 
   print "default model quantize params"
 
-  welp :: L.ModelQuantizeParamsPtr <- castPtr <$> L.modelQuantizeDefaultParams
+  _modelQuantParams :: L.ModelQuantizeParamsPtr <- castPtr <$> L.modelQuantizeDefaultParams
 
-  print "default context params"
+  --
+  -- this causes a segfault, I assume because memory is not getting
+  -- allocated properly, but I'm not good enough at C/Haskell FFI to
+  -- figure it out quickly so punting for now and just defining my own
+  -- ContextParams below
+  --
+  -- contextParams :: IO L.ContextParams <- peek . castPtr <$> L.contextDefaultParams
 
-  _ <- L.contextDefaultParams -- wrap and return newtype
+  alloca $ \(cpp :: L.ContextParamsPtr) ->
+    allocaArray 1 $ \ap -> do
 
-  print "loading model"
+      print "default context params"
 
-  -- model <- withCString
-  --   "/home/dd/ai/models/open-llama-7b-v2-open-instruct.ggmlv3.q5_K_M.bin"
-  --   (flip L.loadModelFromFile contextParams)
+      let
+        contextParams = L.ContextParams
+          (-1) -- seed
+          512 -- _nCtx
+          512 -- _nBatch
+          0 -- _nGpuLayers
+          0 -- _mainGpu
+          ap -- _tensorSplit
+          nullFunPtr -- _progressCallback
+          nullPtr -- _progressCallbackUserData
+          False --_lowVRAM
+          True -- _f16KV
+          False -- _logitsAll
+          False -- _vocabOnly
+          True -- _useMmap
+          False -- _useMlock
+          False -- _embedding
 
-  -- print "freeing model"
-
-  -- L.freeModel model
-
-
+      poke cpp contextParams
 
 -- initialize model data structure
 -- initialize context data structure
+
+      print "loading model"
+
+      model <- withCString
+        "/home/dd/code/ai/models/open-llama-7b-v2-open-instruct.ggmlv3.q5_K_M.bin"
+        (flip L.loadModelFromFile $ castPtr cpp)
+
 
 --
 -- llama_init_from_gpt_params
@@ -129,3 +156,7 @@ main = do
 --   output for next line of interaction
 --   end of text token
 --   return user control when max tokens reached in output, I assume
+
+      print "freeing model"
+
+      L.freeModel model

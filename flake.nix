@@ -2,7 +2,7 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
-    llama-cpp.url = "github:ddellacosta/llama.cpp";
+    llama-cpp.url = "github:ggerganov/llama.cpp";
   };
 
   outputs = { self, nixpkgs, flake-utils, llama-cpp }:
@@ -21,13 +21,12 @@
               mkdir -p $out/lib
               mkdir -p $out/include
               cp *.a $out/lib/
-              for i in $src/*.h; do cp $i $out/include/; done
+              cp $src/*.h $out/include/
             '';
           });
 
         project = devTools:
           let
-            _ = builtins.trace (lib.attrNames llama-cpp);
             addBuildTools = (t.flip hl.addBuildTools) (devTools ++ [
               zlib
               haskellPackages.c2hs

@@ -42,15 +42,15 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1689357584,
-        "narHash": "sha256-4fcH7Y5uQVWO10aV7fzhZptatuIoljb24ubWZxexVMA=",
-        "owner": "ddellacosta",
+        "lastModified": 1689362018,
+        "narHash": "sha256-200hQZHjaypn+5j+ZqpI9WtysXa3pvn40xfOeOoT2gY=",
+        "owner": "ggerganov",
         "repo": "llama.cpp",
-        "rev": "4abdcd5479b67b8c7cec4ce3075dfc77b47adfd4",
+        "rev": "a6803cab946c817fb7aaf2a40b317f5d3e373bd1",
         "type": "github"
       },
       "original": {
-        "owner": "ddellacosta",
+        "owner": "ggerganov",
         "repo": "llama.cpp",
         "type": "github"
       }
