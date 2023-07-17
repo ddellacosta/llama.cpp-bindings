@@ -19,7 +19,8 @@ common shared
   ghc-options: -Wall
 
   build-depends:
-    base ^>= 4.17.1.0
+      base ^>= 4.17.1.0
+    , lens ^>= 5.2.2
     
 library
   import:              shared
@@ -30,7 +31,13 @@ library
   extra-libraries:
     llama
     stdc++
-  includes:            llama.h
+  includes:
+    llama.h
+    wrapper.h
+  include-dirs:
+    cbits
+  c-sources:
+    cbits/wrapper.c
   exposed-modules:
     LLaMACPP
   hs-source-dirs:      src

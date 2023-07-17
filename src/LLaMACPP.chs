@@ -1,12 +1,15 @@
 
 module LLaMACPP where
 
-import Foreign.C.Types (CChar, CFloat, CInt, CLong, CUChar, CUInt, CULong)
-import Foreign.Ptr (FunPtr, Ptr, castPtr)
+import Foreign.C.Types (CChar, CDouble, CFloat, CInt, CLong, CUChar, CUInt, CULong)
 import Foreign.Marshal.Utils (fromBool, toBool)
+import Foreign.Ptr (FunPtr, Ptr, castPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (Storable, alignment, peek, poke, sizeOf)
 
 #include "llama.h"
+-- this is here so I can pass structs by reference to C API functions
+-- that expect them by value
+#include "wrapper.h"
 
 {# context lib="llama" prefix="llama" #}
 
@@ -19,7 +22,7 @@ import Foreign.Storable (Storable, alignment, peek, poke, sizeOf)
 instance Storable Model where
   sizeOf (Model t) = sizeOf t
   alignment (Model t) = alignment t
-  peek p = fmap Model (peek (castPtr p))
+  peek p = Model <$> (peek . castPtr $ p)
   poke p (Model t) = poke (castPtr p) t
 
 
@@ -32,7 +35,7 @@ instance Storable Model where
 instance Storable Context where
   sizeOf (Context t) = sizeOf t
   alignment (Context t) = alignment t
-  peek p = fmap Context (peek (castPtr p))
+  peek p = Context <$> (peek . castPtr $ p)
   poke p (Context t) = poke (castPtr p) t
 
 
@@ -244,7 +247,7 @@ instance Storable ModelQuantizeParams where
     <*> {# get model_quantize_params->quantize_output_tensor #} p
   poke p (ModelQuantizeParams _nthread _ftype _ar _qot) = do
     {# set model_quantize_params->nthread #} p _nthread
-    {# set model_quantize_params->ftype #} p (toEnum . fromEnum $ _ftype) -- really?
+    {# set model_quantize_params->ftype #} p (toEnum . fromEnum $ _ftype) -- lol
     {# set model_quantize_params->allow_requantize #} p _ar
     {# set model_quantize_params->quantize_output_tensor #} p _qot
 
@@ -252,8 +255,38 @@ instance Storable ModelQuantizeParams where
 --
 -- LLAMA_API struct llama_context_params llama_context_default_params();
 --
-contextDefaultParams :: IO (Ptr ())
-contextDefaultParams = {# call unsafe context_default_params #}
+--
+-- This causes a segfault, I assume because memory is not getting
+-- allocated properly, but I'm not good enough at C/Haskell FFI to
+-- figure it out quickly so punting for now and just defining my own
+-- defaultContextParams function below.
+--
+_contextDefaultParams :: IO ContextParamsPtr
+_contextDefaultParams = castPtr <$> {# call unsafe context_default_params #}
+
+
+-- #define LLAMA_DEFAULT_SEED 0xFFFFFFFF
+defaultSeed :: CUInt
+defaultSeed = 0xFFFFFFFF
+
+
+defaultContextParams :: Ptr CFloat -> ContextParams
+defaultContextParams ap = ContextParams
+  defaultSeed -- seed
+  512 -- _nCtx
+  512 -- _nBatch
+  0 -- _nGpuLayers
+  0 -- _mainGpu
+  ap -- _tensorSplit
+  nullFunPtr -- _progressCallback
+  nullPtr -- _progressCallbackUserData
+  False --_lowVRAM
+  True -- _f16KV
+  False -- _logitsAll
+  False -- _vocabOnly
+  True -- _useMmap
+  False -- _useMlock
+  False -- _embedding
 
 
 --
@@ -305,9 +338,11 @@ timeUs = {# call unsafe time_us #}
 --                          const char * path_model,
 --         struct llama_context_params   params);
 --
-
-loadModelFromFile :: Ptr CChar -> Ptr () -> IO Model
-loadModelFromFile = {# call unsafe load_model_from_file #}
+-- Can't pass structs by value via FFI, so wrote a wrapper:
+--
+loadModelFromFile :: Ptr CChar -> ContextParamsPtr -> IO Model
+loadModelFromFile modelPath ctxParamsPtr =
+  {# call unsafe wrapper_load_model_from_file #} modelPath (castPtr ctxParamsPtr)
 
 
 --
@@ -323,8 +358,9 @@ freeModel = {# call unsafe free_model #}
 --         struct llama_context_params   params);
 --
 
-newContextWithModel :: Model -> Ptr () -> IO (Context)
-newContextWithModel = {# call unsafe new_context_with_model #}
+newContextWithModel :: Model -> ContextParamsPtr -> IO (Context)
+newContextWithModel model ctxParamsPtr =
+  {# call unsafe new_context_with_model #} model (castPtr ctxParamsPtr)
 
 
 --
@@ -429,8 +465,8 @@ saveSessionFile = {# call unsafe save_session_file #}
 --                          int   n_past,
 --                          int   n_threads);
 --
-llamaEval :: Context -> Ptr Token -> CInt -> CInt -> CInt -> IO CInt
-llamaEval = {# call unsafe llama_eval #}
+eval :: Context -> Ptr Token -> CInt -> CInt -> CInt -> IO CInt
+eval = {# call unsafe eval #}
 
 
 --
@@ -476,23 +512,8 @@ tokenize = {# call unsafe tokenize #}
 
 --
 -- LLAMA_API int llama_n_vocab(const struct llama_context * ctx);
---
-nVocab :: Context -> IO CInt
-nVocab = {# call unsafe n_vocab #}
-
-
---
 -- LLAMA_API int llama_n_ctx  (const struct llama_context * ctx);
---
-nCtx :: Context -> IO CInt
-nCtx = {# call unsafe n_ctx #}
-
-
---
 -- LLAMA_API int llama_n_embd (const struct llama_context * ctx);
---
-nEmbd :: Context -> IO CInt
-nEmbd = {# call unsafe n_embd #}
 
 
 --
@@ -515,18 +536,12 @@ getVocab = {# call unsafe get_vocab #}
 -- // Rows: n_tokens
 -- // Cols: n_vocab
 -- LLAMA_API float * llama_get_logits(struct llama_context * ctx);
---
-getLogits :: Context -> IO (Ptr CFloat)
-getLogits = {# call unsafe get_logits #}
 
 
 --
 -- // Get the embeddings for the input
 -- // shape: [n_embd] (1-dimensional)
 -- LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
---
-getEmbeddings :: Context -> IO (Ptr CFloat)
-getEmbeddings = {# call unsafe get_embeddings #}
 
 
 --
@@ -670,6 +685,60 @@ sampleToken = {# call unsafe sample_token #}
 --
 -- // Performance information
 --
+
+--
+--     // performance timing information
+--     struct llama_timings {
+--         double t_start_ms;
+--         double t_end_ms;
+--         double t_load_ms;
+--         double t_sample_ms;
+--         double t_p_eval_ms;
+--         double t_eval_ms;
+--
+--         int32_t n_sample;
+--         int32_t n_p_eval;
+--         int32_t n_eval;
+--     };
+--
+data Timings = Timings
+  { _tStartMs :: CDouble
+  , _tEndMs :: CDouble
+  , _tLoadMs :: CDouble
+  , _tSampleMs :: CDouble
+  , _tPEvalMs :: CDouble
+  , _tEvalMs :: CDouble
+  , _nSample :: CInt
+  , _nPEval :: CInt
+  , _nEval :: CInt
+  }
+  deriving (Eq, Show)
+
+{# pointer *timings as TimingsPtr -> Timings #}
+
+instance Storable Timings where
+  sizeOf _ = {# sizeof timings #}
+  alignment _ = {# alignof timings #}
+  peek p = Timings
+    <$> {# get timings->t_start_ms #} p
+    <*> {# get timings->t_end_ms #} p
+    <*> {# get timings->t_load_ms #} p
+    <*> {# get timings->t_sample_ms #} p
+    <*> {# get timings->t_p_eval_ms #} p
+    <*> {# get timings->t_eval_ms #} p
+    <*> {# get timings->n_sample #} p
+    <*> {# get timings->n_p_eval #} p
+    <*> {# get timings->n_eval #} p
+  poke p (Timings _tStartMs _tEndMs _tLoadMs _tSampleMs _tPEvalMs _tEvalMs _nSample _nPEval _nEval) = do
+    {# set timings->t_start_ms #} p _tStartMs
+    {# set timings->t_end_ms #} p _tEndMs
+    {# set timings->t_load_ms #} p _tLoadMs
+    {# set timings->t_sample_ms #} p _tSampleMs
+    {# set timings->t_p_eval_ms #} p _tPEvalMs
+    {# set timings->t_eval_ms #} p _tEvalMs
+    {# set timings->n_sample #} p _nSample
+    {# set timings->n_p_eval #} p _nPEval
+    {# set timings->n_eval #} p _nEval
 
 --
 -- LLAMA_API void llama_print_timings(struct llama_context * ctx);
