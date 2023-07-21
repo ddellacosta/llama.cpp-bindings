@@ -3,7 +3,7 @@ module LLaMACPP where
 
 import Foreign.C.Types (CChar, CDouble, CFloat, CInt, CLong, CUChar, CUInt, CULong)
 import Foreign.Marshal.Utils (fromBool, toBool)
-import Foreign.Ptr (FunPtr, Ptr, castPtr, nullFunPtr, nullPtr)
+import Foreign.Ptr (FunPtr, Ptr, castPtr)
 import Foreign.Storable (Storable, alignment, peek, poke, sizeOf)
 
 #include "llama.h"
@@ -256,58 +256,30 @@ instance Storable ModelQuantizeParams where
 -- LLAMA_API struct llama_context_params llama_context_default_params();
 --
 --
--- This causes a segfault, I assume because memory is not getting
--- allocated properly, but I'm not good enough at C/Haskell FFI to
--- figure it out quickly so punting for now and just defining my own
--- defaultContextParams function below.
---
-_contextDefaultParams :: IO ContextParamsPtr
-_contextDefaultParams = castPtr <$> {# call unsafe context_default_params #}
-
-
--- #define LLAMA_DEFAULT_SEED 0xFFFFFFFF
-defaultSeed :: CUInt
-defaultSeed = 0xFFFFFFFF
-
-
-defaultContextParams :: Ptr CFloat -> ContextParams
-defaultContextParams ap = ContextParams
-  defaultSeed -- seed
-  512 -- _nCtx
-  512 -- _nBatch
-  0 -- _nGpuLayers
-  0 -- _mainGpu
-  ap -- _tensorSplit
-  nullFunPtr -- _progressCallback
-  nullPtr -- _progressCallbackUserData
-  False --_lowVRAM
-  True -- _f16KV
-  False -- _logitsAll
-  False -- _vocabOnly
-  True -- _useMmap
-  False -- _useMlock
-  False -- _embedding
+contextDefaultParams :: ContextParamsPtr -> IO ()
+contextDefaultParams = {# call wrapper_context_default_params #}
 
 
 --
 -- LLAMA_API struct llama_model_quantize_params llama_model_quantize_default_params();
 --
-modelQuantizeDefaultParams :: IO (Ptr ())
-modelQuantizeDefaultParams = {# call unsafe model_quantize_default_params #}
+modelQuantizeDefaultParams :: ModelQuantizeParamsPtr -> IO ()
+modelQuantizeDefaultParams = {# call wrapper_model_quantize_default_params #}
+
 
 
 --
 -- LLAMA_API bool llama_mmap_supported();
 --
 mmapSupported :: IO Bool
-mmapSupported = toBool <$> {# call unsafe mmap_supported #}
+mmapSupported = toBool <$> {# call mmap_supported #}
 
 
 --
 -- LLAMA_API bool llama_mlock_supported();
 --
 mlockSupported :: IO Bool
-mlockSupported = toBool <$> {# call unsafe mlock_supported #}
+mlockSupported = toBool <$> {# call mlock_supported #}
 
 
 --
@@ -318,19 +290,19 @@ mlockSupported = toBool <$> {# call unsafe mlock_supported #}
 -- LLAMA_API void llama_init_backend(bool numa);
 --
 initBackend :: Bool -> IO ()
-initBackend = {# call unsafe backend_init #} . fromBool
+initBackend = {# call backend_init #} . fromBool
 
 
 -- // Call once at the end of the program - currently only used for MPI
 --
 freeBackend :: IO ()
-freeBackend = {# call unsafe backend_free #}
+freeBackend = {# call backend_free #}
 
 --
 -- LLAMA_API int64_t llama_time_us();
 --
 timeUs :: IO CLong
-timeUs = {# call unsafe time_us #}
+timeUs = {# call time_us #}
 
 
 --
@@ -342,14 +314,14 @@ timeUs = {# call unsafe time_us #}
 --
 loadModelFromFile :: Ptr CChar -> ContextParamsPtr -> IO Model
 loadModelFromFile modelPath ctxParamsPtr =
-  {# call unsafe wrapper_load_model_from_file #} modelPath (castPtr ctxParamsPtr)
+  {# call wrapper_load_model_from_file #} modelPath (castPtr ctxParamsPtr)
 
 
 --
 -- LLAMA_API void llama_free_model(struct llama_model * model);
 --
 freeModel :: Model -> IO ()
-freeModel = {# call unsafe free_model #}
+freeModel = {# call free_model #}
 
 
 --
@@ -360,7 +332,7 @@ freeModel = {# call unsafe free_model #}
 
 newContextWithModel :: Model -> ContextParamsPtr -> IO (Context)
 newContextWithModel model ctxParamsPtr =
-  {# call unsafe new_context_with_model #} model (castPtr ctxParamsPtr)
+  {# call new_context_with_model #} model (castPtr ctxParamsPtr)
 
 
 --
@@ -369,7 +341,7 @@ newContextWithModel model ctxParamsPtr =
 --
 
 free :: Context -> IO ()
-free = {# call unsafe free #}
+free = {# call free #}
 
 
 --
@@ -380,7 +352,7 @@ free = {# call unsafe free #}
 --         const llama_model_quantize_params * params);
 --
 modelQuantize :: Ptr CChar -> Ptr CChar -> ModelQuantizeParamsPtr -> IO CInt
-modelQuantize = {# call unsafe model_quantize #}
+modelQuantize = {# call model_quantize #}
 
 
 --
@@ -391,7 +363,7 @@ modelQuantize = {# call unsafe model_quantize #}
 --                          int   n_threads);
 --
 modelApplyLoraFromFile :: Model -> Ptr CChar -> Ptr CChar -> CInt -> IO CInt
-modelApplyLoraFromFile = {# call unsafe model_apply_lora_from_file #}
+modelApplyLoraFromFile = {# call model_apply_lora_from_file #}
 
 
 --
@@ -399,7 +371,7 @@ modelApplyLoraFromFile = {# call unsafe model_apply_lora_from_file #}
 -- LLAMA_API int llama_get_kv_cache_token_count(const struct llama_context * ctx);
 --
 getKVCacheTokenCount :: Context -> IO CInt
-getKVCacheTokenCount = {# call unsafe get_kv_cache_token_count #}
+getKVCacheTokenCount = {# call get_kv_cache_token_count #}
 
 
 --
@@ -407,7 +379,7 @@ getKVCacheTokenCount = {# call unsafe get_kv_cache_token_count #}
 -- LLAMA_API void llama_set_rng_seed(struct llama_context * ctx, uint32_t seed);
 --
 setRNGSeed :: Context -> CUInt -> IO ()
-setRNGSeed = {# call unsafe set_rng_seed #}
+setRNGSeed = {# call set_rng_seed #}
 
 
 --
@@ -416,7 +388,7 @@ setRNGSeed = {# call unsafe set_rng_seed #}
 -- LLAMA_API size_t llama_get_state_size(const struct llama_context * ctx);
 --
 getStateSize :: Context -> IO CULong
-getStateSize = {# call unsafe get_state_size #}
+getStateSize = {# call get_state_size #}
 
 
 --
@@ -426,7 +398,7 @@ getStateSize = {# call unsafe get_state_size #}
 -- LLAMA_API size_t llama_copy_state_data(struct llama_context * ctx, uint8_t * dst);
 --
 copyStateData :: Context -> Ptr CUChar -> IO CULong
-copyStateData = {# call unsafe copy_state_data #}
+copyStateData = {# call copy_state_data #}
 
 
 --
@@ -435,7 +407,7 @@ copyStateData = {# call unsafe copy_state_data #}
 -- LLAMA_API size_t llama_set_state_data(struct llama_context * ctx, uint8_t * src);
 --
 setStateData :: Context -> Ptr CUChar -> IO CULong
-setStateData = {# call unsafe set_state_data #}
+setStateData = {# call set_state_data #}
 
 
 --
@@ -443,14 +415,14 @@ setStateData = {# call unsafe set_state_data #}
 -- LLAMA_API bool llama_load_session_file(struct llama_context * ctx, const char * path_session, llama_token * tokens_out, size_t n_token_capacity, size_t * n_token_count_out);
 --
 loadSessionFile :: Context -> Ptr CChar -> Ptr Token -> CULong -> Ptr CULong -> IO CUChar
-loadSessionFile = {# call unsafe load_session_file #}
+loadSessionFile = {# call load_session_file #}
 
 
 --
 -- LLAMA_API bool llama_save_session_file(struct llama_context * ctx, const char * path_session, const llama_token * tokens, size_t n_token_count);
 --
 saveSessionFile :: Context -> Ptr CChar -> Ptr Token -> CULong -> IO CUChar
-saveSessionFile = {# call unsafe save_session_file #}
+saveSessionFile = {# call save_session_file #}
 
 
 --
@@ -466,7 +438,7 @@ saveSessionFile = {# call unsafe save_session_file #}
 --                          int   n_threads);
 --
 eval :: Context -> Ptr Token -> CInt -> CInt -> CInt -> IO CInt
-eval = {# call unsafe eval #}
+eval = {# call eval #}
 
 
 --
@@ -479,7 +451,7 @@ eval = {# call unsafe eval #}
 --                          int   n_threads);
 --
 evalEmbd :: Context -> Ptr CFloat -> CInt -> CInt -> CInt -> IO CInt
-evalEmbd = {# call unsafe eval_embd #}
+evalEmbd = {# call eval_embd #}
 
 
 --
@@ -490,7 +462,7 @@ evalEmbd = {# call unsafe eval_embd #}
 -- LLAMA_API int llama_eval_export(struct llama_context * ctx, const char * fname);
 --
 evalExport :: Context -> Ptr CChar -> IO CInt
-evalExport = {# call unsafe eval_export #}
+evalExport = {# call eval_export #}
 
 
 --
@@ -507,13 +479,26 @@ evalExport = {# call unsafe eval_export #}
 --                         bool   add_bos);
 --
 tokenize :: Context -> Ptr CChar -> Ptr Token -> CInt -> CUChar -> IO CInt
-tokenize = {# call unsafe tokenize #}
+tokenize = {# call tokenize #}
 
 
 --
 -- LLAMA_API int llama_n_vocab(const struct llama_context * ctx);
+--
+nVocab :: Context -> IO CInt
+nVocab = {# call n_vocab #}
+
+--
 -- LLAMA_API int llama_n_ctx  (const struct llama_context * ctx);
+--
+nCtx :: Context -> IO CInt
+nCtx = {# call n_ctx #}
+
+--
 -- LLAMA_API int llama_n_embd (const struct llama_context * ctx);
+--
+nEmbd :: Context -> IO CInt
+nEmbd = {# call n_embd #}
 
 
 --
@@ -526,7 +511,7 @@ tokenize = {# call unsafe tokenize #}
 --                                int   capacity);
 --
 getVocab :: Context -> Ptr (Ptr CChar) -> Ptr CFloat -> CInt -> IO CInt
-getVocab = {# call unsafe get_vocab #}
+getVocab = {# call get_vocab #}
 
 
 --
@@ -536,12 +521,18 @@ getVocab = {# call unsafe get_vocab #}
 -- // Rows: n_tokens
 -- // Cols: n_vocab
 -- LLAMA_API float * llama_get_logits(struct llama_context * ctx);
+--
+getLogits :: Context -> IO (Ptr CFloat)
+getLogits = {# call llama_get_logits #}
 
 
 --
 -- // Get the embeddings for the input
 -- // shape: [n_embd] (1-dimensional)
 -- LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
+--
+getEmbeddings :: Context -> IO (Ptr CFloat)
+getEmbeddings = {# call llama_get_embeddings #}
 
 
 --
@@ -549,7 +540,7 @@ getVocab = {# call unsafe get_vocab #}
 -- LLAMA_API const char * llama_token_to_str(const struct llama_context * ctx, llama_token token);
 --
 tokenToStr :: Context -> Token -> IO (Ptr CChar)
-tokenToStr = {# call unsafe token_to_str #}
+tokenToStr = {# call token_to_str #}
 
 
 -- // Special tokens
@@ -558,21 +549,21 @@ tokenToStr = {# call unsafe token_to_str #}
 -- LLAMA_API llama_token llama_token_bos();  // beginning-of-sentence
 --
 tokenBos :: IO Token
-tokenBos = {# call unsafe token_bos #}
+tokenBos = {# call token_bos #}
 
 
 --
 -- LLAMA_API llama_token llama_token_eos();  // end-of-sentence
 --
 tokenEos :: IO Token
-tokenEos = {# call unsafe token_eos #}
+tokenEos = {# call token_eos #}
 
 
 --
 -- LLAMA_API llama_token llama_token_nl();   // next-line
 --
 tokenNl :: IO Token
-tokenNl = {# call unsafe token_nl #}
+tokenNl = {# call token_nl #}
 
 
 -- // Sampling functions
@@ -582,7 +573,7 @@ tokenNl = {# call unsafe token_nl #}
 -- LLAMA_API void llama_sample_repetition_penalty(struct llama_context * ctx, llama_token_data_array * candidates, const llama_token * last_tokens, size_t last_tokens_size, float penalty);
 --
 sampleRepetitionPenalty :: Context -> Ptr TokenDataArray -> Ptr Token -> CULong -> CFloat -> IO ()
-sampleRepetitionPenalty = {# call unsafe sample_repetition_penalty #}
+sampleRepetitionPenalty = {# call sample_repetition_penalty #}
 
 
 --
@@ -591,7 +582,7 @@ sampleRepetitionPenalty = {# call unsafe sample_repetition_penalty #}
 --
 sampleFrequencyAndPresencePenalties
   :: Context -> Ptr TokenDataArray -> Ptr Token -> CULong -> CFloat -> CFloat -> IO ()
-sampleFrequencyAndPresencePenalties = {# call unsafe sample_frequency_and_presence_penalties #} 
+sampleFrequencyAndPresencePenalties = {# call sample_frequency_and_presence_penalties #} 
 
 
 --
@@ -599,7 +590,7 @@ sampleFrequencyAndPresencePenalties = {# call unsafe sample_frequency_and_presen
 -- LLAMA_API void llama_sample_softmax(struct llama_context * ctx, llama_token_data_array * candidates);
 --
 sampleSoftmax :: Context -> Ptr TokenDataArray -> IO ()
-sampleSoftmax = {# call unsafe sample_softmax #}
+sampleSoftmax = {# call sample_softmax #}
 
 
 --
@@ -607,7 +598,7 @@ sampleSoftmax = {# call unsafe sample_softmax #}
 -- LLAMA_API void llama_sample_top_k(struct llama_context * ctx, llama_token_data_array * candidates, int k, size_t min_keep);
 --
 sampleTopK :: Context -> Ptr TokenDataArray -> CInt -> CULong -> IO ()
-sampleTopK = {# call unsafe sample_top_k #}
+sampleTopK = {# call sample_top_k #}
 
 
 --
@@ -615,7 +606,7 @@ sampleTopK = {# call unsafe sample_top_k #}
 -- LLAMA_API void llama_sample_top_p(struct llama_context * ctx, llama_token_data_array * candidates, float p, size_t min_keep);
 --
 sampleTopP :: Context -> Ptr TokenDataArray -> CFloat -> CULong -> IO ()
-sampleTopP = {# call unsafe sample_top_p #}
+sampleTopP = {# call sample_top_p #}
 
 
 --
@@ -623,7 +614,7 @@ sampleTopP = {# call unsafe sample_top_p #}
 -- LLAMA_API void llama_sample_tail_free(struct llama_context * ctx, llama_token_data_array * candidates, float z, size_t min_keep);
 --
 sampleTailFree :: Context -> Ptr TokenDataArray -> CFloat -> CULong -> IO ()
-sampleTailFree = {# call unsafe sample_tail_free #}
+sampleTailFree = {# call sample_tail_free #}
 
 
 --
@@ -631,14 +622,14 @@ sampleTailFree = {# call unsafe sample_tail_free #}
 -- LLAMA_API void llama_sample_typical(struct llama_context * ctx, llama_token_data_array * candidates, float p, size_t min_keep);
 --
 sampleTypical :: Context -> Ptr TokenDataArray -> CFloat -> CULong -> IO ()
-sampleTypical = {# call unsafe sample_typical #}
+sampleTypical = {# call sample_typical #}
 
 
 --
 -- LLAMA_API void llama_sample_temperature(struct llama_context * ctx, llama_token_data_array * candidates, float temp);
 --
 sampleTemperature :: Context -> Ptr TokenDataArray -> CFloat -> IO ()
-sampleTemperature = {# call unsafe sample_temperature #}
+sampleTemperature = {# call sample_temperature #}
 
 
 --
@@ -651,7 +642,7 @@ sampleTemperature = {# call unsafe sample_temperature #}
 -- LLAMA_API llama_token llama_sample_token_mirostat(struct llama_context * ctx, llama_token_data_array * candidates, float tau, float eta, int m, float * mu);
 --
 sampleTokenMirostat :: Context -> Ptr TokenDataArray -> CFloat -> CFloat -> CInt -> Ptr CFloat -> IO Token
-sampleTokenMirostat = {# call unsafe sample_token_mirostat #}
+sampleTokenMirostat = {# call sample_token_mirostat #}
 
 
 --
@@ -663,7 +654,7 @@ sampleTokenMirostat = {# call unsafe sample_token_mirostat #}
 -- LLAMA_API llama_token llama_sample_token_mirostat_v2(struct llama_context * ctx, llama_token_data_array * candidates, float tau, float eta, float * mu);
 --
 sampleTokenMirostatV2 :: Context -> Ptr TokenDataArray -> CFloat -> CFloat -> Ptr CFloat -> IO Token
-sampleTokenMirostatV2 = {#call unsafe sample_token_mirostat_v2 #}
+sampleTokenMirostatV2 = {#call sample_token_mirostat_v2 #}
 
 
 --
@@ -671,7 +662,7 @@ sampleTokenMirostatV2 = {#call unsafe sample_token_mirostat_v2 #}
 -- LLAMA_API llama_token llama_sample_token_greedy(struct llama_context * ctx, llama_token_data_array * candidates);
 --
 sampleTokenGreedy :: Context -> Ptr TokenDataArray -> IO Token
-sampleTokenGreedy = {# call unsafe sample_token_greedy #}
+sampleTokenGreedy = {# call sample_token_greedy #}
 
 
 --
@@ -679,7 +670,7 @@ sampleTokenGreedy = {# call unsafe sample_token_greedy #}
 -- LLAMA_API llama_token llama_sample_token(struct llama_context * ctx, llama_token_data_array * candidates);
 --
 sampleToken :: Context -> Ptr TokenDataArray -> IO Token
-sampleToken = {# call unsafe sample_token #}
+sampleToken = {# call sample_token #}
 
 
 --
@@ -744,14 +735,14 @@ instance Storable Timings where
 -- LLAMA_API void llama_print_timings(struct llama_context * ctx);
 --
 printTimings :: Context -> IO ()
-printTimings = {# call unsafe print_timings #}
+printTimings = {# call print_timings #}
 
 
 --
 -- LLAMA_API void llama_reset_timings(struct llama_context * ctx);
 --
 resetTimings :: Context -> IO ()
-resetTimings = {# call unsafe reset_timings #}
+resetTimings = {# call reset_timings #}
 
 
 --
@@ -759,4 +750,4 @@ resetTimings = {# call unsafe reset_timings #}
 -- LLAMA_API const char * llama_print_system_info(void);
 --
 printSystemInfo :: IO (Ptr CChar)
-printSystemInfo = {# call unsafe print_system_info #}
+printSystemInfo = {# call print_system_info #}

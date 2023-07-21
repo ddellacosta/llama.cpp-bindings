@@ -1,16 +1,45 @@
-{-# LANGUAGE TemplateHaskell #-}
-
 module Main where
 
-import Control.Lens
-import Control.Lens.TH (makeFieldsNoPrefix)
+import Control.Exception (bracket, finally)
+import Data.Foldable (foldlM, for_)
+import Data.Functor ((<&>), void)
+import qualified Data.Vector.Storable as V
 import qualified LLaMACPP as L
 import Foreign.C.String (peekCString, withCString)
+import Foreign.C.Types (CFloat, CInt)
+import Foreign.ForeignPtr (newForeignPtr_)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Marshal.Array (allocaArray, pokeArray)
-import Foreign.Marshal.Utils (with)
-import Foreign.Ptr (Ptr, castPtr)
-import Foreign.Storable (Storable(peek, poke, sizeOf))
+import Foreign.Marshal.Array (allocaArray, copyArray, newArray, peekArray, pokeArray, withArray)
+import Foreign.Marshal.Utils (fromBool)
+import Foreign.Ptr (Ptr)
+import Foreign.Storable (Storable(peek, poke))
+import GHC.Conc (TVar, atomically, newTVarIO, readTVarIO, writeTVar)
+
+
+--
+-- ## Notes on main.cpp
+--
+-- This is basically the main loop logic, mapping to a single
+--    prompt -> tokenize -> eval -> (sample -> eval)
+-- pass, which doesn't really map to a single loop, and I'm
+-- disregarding stuff like sessions and guidance and a bunch of things
+-- that can be adjusted based on parameters. There is a lot of
+-- logic also to enable interactive prompts so that relevant data is
+-- fed in and "rotated" intelligently to maintain the context during a
+-- session, and that is also disregarded here (for now):
+--
+-- * collect prompt information/user-input and tokenize, storing in `embd_inp`.
+--   * `embd_inp` never appears to be cleared, so it just accumulates values as the program proceeds.
+--   * https://github.com/ggerganov/llama.cpp/blob/e782c9e735f93ab4767ffc37462c523b73a17ddc/examples/main/main.cpp#L649-L733, although this ignores some other points where prompt data is stuffed into `embd_inp` ahead of the main loop, based on input parameters and whatnot
+--
+-- * store tokenized input in `embd` along with `last_n_tokens`
+--   * `last_n_tokens` is reset so its size is maintained. [The size is n_ctx](https://github.com/ggerganov/llama.cpp/blob/e782c9e735f93ab4767ffc37462c523b73a17ddc/examples/main/main.cpp#L344).
+--
+-- * tokenized data in embd is eval'd, then sampled
+--   * https://github.com/ggerganov/llama.cpp/blob/e782c9e735f93ab4767ffc37462c523b73a17ddc/examples/main/main.cpp#L497-L507
+--   * after every token generated, the token is fed back in and eval'ed so sampling takes that into account on the next pass
+--
+
 
 main :: IO ()
 main = do
@@ -24,19 +53,20 @@ main = do
   --   -m open-llama-7b-v2-open-instruct.ggmlv3.q4_0.bin
   --   --color      -- colorize output
   --   -c 2048      -- size of prompt context
-  --   --temp 0.7   -- temperature -- seems to be about tuning?
-  --   --repeat_penalty 1.1 -- seems to be about tuning?
+  --   --temp 0.7   -- temperature -- sampling tuning
+  --   --repeat_penalty 1.1 -- sampling tuning
   --   -n -1 -- number of tokens to predict, -1 is infinity, just used
-  --            to loop around in interactive mode?
+  --            to loop around in interactive mode
   --   -p "### Instruction: Write a story about llamas\n### Response:"
   -- (or interactive, instead of -p: -i -ins)
 
   let
-    nThreads = 10
+    nPredict = 50
+    nThreads = 8
     nCtx = 2048 -- 2048
+    nCtxInt = fromIntegral nCtx
     nGpuLayers = 32
     enableNumaOpts = False
-    _nPredict = -1 -- do I need this?
 
   -- TODO:
   --   dump out build info
@@ -47,8 +77,6 @@ main = do
   L.initBackend enableNumaOpts
 
   putStrLn "\ndefault model quantize params"
-
-  _modelQuantParams :: L.ModelQuantizeParamsPtr <- castPtr <$> L.modelQuantizeDefaultParams
 
   --
   -- * start llama_init_from_gpt_params *
@@ -79,116 +107,181 @@ main = do
   -- lparams.logits_all   = params.perplexity;
   -- lparams.embedding    = params.embedding;
 
-  allocaArray 1 $ \ap -> do
+  alloca $ \(cpp :: L.ContextParamsPtr) -> do
     putStrLn "\ninit context params"
+    L.contextDefaultParams cpp
+    ctxParams' <- peek cpp
 
     let
-      contextParams =
-        (L.defaultContextParams ap)
+      ctxParams = ctxParams'
         { L._nCtx = nCtx
         , L._nGpuLayers = nGpuLayers
         }
 
-    with contextParams $ \cpp -> do
+    poke cpp ctxParams
 
-      -- just to prove that it's actually in the freaking struct at
-      -- that memory address
-      newContextParams <- peek cpp
+    putStrLn "\nloading model"
 
-      putStrLn ""
-      putStrLn $ "Seed: " <> (show $ L._seed newContextParams)
-      putStrLn $ "nCtx: " <> (show $ L._nCtx newContextParams)
+    model <- withCString
+      "/home/dd/code/ai/models/open-llama-7b-v2-open-instruct.ggmlv3.q5_K_M.bin"
+      (flip L.loadModelFromFile cpp)
 
-      putStrLn "\nloading model"
+    putStrLn "\nloading context"
 
-      model <- withCString
-        "/home/dd/code/ai/models/open-llama-7b-v2-open-instruct.ggmlv3.q5_K_M.bin"
-        (flip L.loadModelFromFile cpp)
+    ctx <- L.newContextWithModel model cpp
 
-      putStrLn "\nloading context"
+    -- skipping Lora stuff until I can get a bare minimum POC up and running
 
-      ctx <- L.newContextWithModel model cpp
+    putStrLn "\nSystem Info:"
 
-      -- skipping Lora stuff until I can get a bare minimum POC up and running
+    putStrLn =<< peekCString =<< L.printSystemInfo
 
-      putStrLn "\nSystem Info:"
+    -- tokenizing & eval
 
-      -- * end common's llama_init_from_gpt_params functionality *
+    -- "do one empty run to warm up the model"
+    allocaArray 1 $ \(tmp :: Ptr L.Token) -> do
+      bos <- L.tokenBos
+      pokeArray tmp [bos]
+      _evalRes <- L.eval ctx tmp 1 0 nThreads
+      L.resetTimings ctx
 
-      -- print system info
-      putStrLn =<< peekCString =<< L.printSystemInfo
+    let
+      testString = "Instruction: I have five pears, what recipe can I make? Response:\n"
+      maxTokens = 1024
+      tokenize s tks addBos = L.tokenize ctx s tks (fromIntegral maxTokens) (fromBool addBos)
 
-      -- if mem_test .... todo
+    tokenized <- allocaArray maxTokens $ \tokensPtr -> do
+      tokenizedCount <- withCString testString $ \ts -> tokenize ts tokensPtr True
 
-      -- if export_cgraph .... todo
+      putStrLn $ "\nTokenized " <> show tokenizedCount
 
-      -- path_session = path_prompt_cache
-      -- session_tokens -- what are these? Record of all strings passed back and forth?
+      _evalRes <- L.eval ctx tokensPtr tokenizedCount 0 nThreads
 
-      -- if path_session !empty
-      -- * calls
-      --   open session file
-      --   session_tokens resized ?
-      --   load_session_file
-      --   again resize session_tokens
-      --   prints stuff
+      putStrLn "\ntokenized, eval'ed our string"
 
-      -- embd_inp - default prompt?
+      peekArray (fromIntegral tokenizedCount) tokensPtr
 
-      -- if we are just getting started add the initial prompt to embd_inp?
-      -- calls tokenize for this
-      -- otherwise we default to session_tokens. Kinda thinking more and
-      -- more session_tokens are the actual session strings
 
-      -- if we have session_tokens
-      --  ... todo, this bit (line 203 - 222)
+    -- sampling
 
-      -- ... a bunch of prompt twiddling and debugging info? until 270
+    let
+      remainderLength = 64 - length tokenized
 
-      -- logic for how the console works in interactive mode until 300, but
-      -- before it's really started
+    -- we want to feed everything into the repetition penalizing algo
+    lastNTokens :: TVar [L.Token] <- newTVarIO $
+      replicate remainderLength 0 <> tokenized
 
-      -- dumping out info about params
+    putStrLn "\n"
+    putStrLn $ testString <> "\n\n"
 
-      -- last_n_tokens ?
+    finally
+      (sample ctx (fromIntegral nCtx) nPredict nThreads lastNTokens (length tokenized))
+      (cleanup ctx model)
 
-      -- more interactive logic
+  where
+    sample :: L.Context -> Int -> Int -> CInt -> TVar [L.Token] -> Int -> IO ()
+    sample ctx nCtx nPredict nThreads lastNTokens nPast =
+      for_ [0..(nPredict - 1)] $ \pn ->
+        alloca $ \candidatesPPtr -> do
+          nVocab <- L.nVocab ctx
+          let nVocabInt = fromIntegral nVocab
+          allocaArray nVocabInt $ \logitsCopyPtr -> do
+            -- logits are a multidimensional array:
+            -- logits[_vocab][n_tokens], as best as I can tell from how
+            -- it's used ("rows/cols" as described in the docstring
+            -- seems backwards)
+            logitsPtr <- L.getLogits ctx
+            copyArray logitsCopyPtr logitsPtr nVocabInt
+            logitsCopyFPtr <- newForeignPtr_ logitsCopyPtr
 
-      -- embd defined - input string?
+            let
+              logitsCopy = V.unsafeFromForeignPtr0 logitsCopyFPtr nVocabInt
 
-      -- "do one empty run to warm up the model"
-      -- * uses
-      --   token_bos
-      --   eval
-      --   reset_timings
+              candidates = [0..(nVocabInt - 1)] <&> \n ->
+                L.TokenData (fromIntegral n) (V.unsafeIndex logitsCopy n) 0.0
 
-      allocaArray 1 $ \(tmp :: Ptr L.Token) -> do
-        bos <- L.tokenBos
-        pokeArray tmp [bos]
-        L.eval ctx tmp 1 0 nThreads
-        L.resetTimings ctx
+            candidatesPtr <- newArray candidates
 
--- while loop, main interactive loop
--- * flow/functions used
---   checks input size
---   "infinite text generation via context swapping"
---   - this seems like it's resetting the vector, keeping on
---     the first value and otherwise removing items by
---     discarding them out of the front of queue as new ones
---     are fed into the end. I guess this is supply the context?
---   "try to reuse a matching prefix from the loaded session instead of re-eval (via n_past)"
---   - not sure what this is...todo. More session_token resizing
---   "evaluate tokens in batches"
---   then there's a big section that looks like cleanup when the loop
---   ends, based on checks (e.g. !is_interacting)
---     - save session optionally
---     - does a bunch of stats calculations?
---     - console newline fiddling
---   reverse prompt check? no idea ...todo
---   output for next line of interaction
---   end of text token
---   return user control when max tokens reached in output, I assume
+            let
+              candidatesP =
+                L.TokenDataArray candidatesPtr (fromIntegral nVocab) False
 
-      putStrLn "\nfreeing model"
+            poke candidatesPPtr candidatesP
 
+            lastNTokens' <- readTVarIO lastNTokens
+
+            -- penalties
+            let
+              alphaFrequency = 0.0 :: CFloat
+              alphaPresence = 0.0 :: CFloat
+              penalizeNl = False
+              repeatPenalty = 1.1
+
+              -- sampling defaults from common.h
+              topK = 40    -- <= 0 to use vocab size
+              topP = 0.95 -- 1.0 = disabled
+              tfsZ = 1.00 -- 1.0 = disabled
+              typicalP = 1.00 -- 1.0 = disabled
+              temp = 0.80 -- 1.0 = disabled
+
+              lastNTokensLen = fromIntegral . length $ lastNTokens'
+
+            withArray lastNTokens' $ \(lastNTokensPtr :: Ptr L.Token) -> do
+              -- putStrLn $ "\nlastNRepeat: " <> show lastNRepeat
+              -- putStrLn $ "\nlastNTokens': " <> show lastNTokensLen
+              -- putStrLn $ "\nlastNTokens': " <> show lastNTokens'
+
+              -- float nl_logit = logits[llama_token_nl()];
+              _nlLogit <- V.unsafeIndex logitsCopy . fromIntegral <$> L.tokenNl
+
+              -- llama_sample_repetition_penalty(ctx, &candidates_p,
+              --     last_n_tokens.data() + last_n_tokens.size() - last_n_repeat,
+              --     last_n_repeat, repeat_penalty);
+
+              -- lastNTokensPtr should be a pointer just to the last
+              -- set of tokens at the end of lastNTokens matching the
+              -- count of lastNRepeat
+              L.sampleRepetitionPenalty ctx candidatesPPtr lastNTokensPtr lastNTokensLen repeatPenalty
+
+              --  llama_sample_frequency_and_presence_penalties(ctx, &candidates_p,
+              --      last_n_tokens.data() + last_n_tokens.size() - last_n_repeat,
+              --      last_n_repeat, alpha_frequency, alpha_presence);
+
+              L.sampleFrequencyAndPresencePenalties
+                ctx candidatesPPtr lastNTokensPtr lastNTokensLen alphaFrequency alphaPresence
+
+              -- if (!penalize_nl) {
+              --     logits[llama_token_nl()] = nl_logit;
+              -- }
+              -- insert nlLogit into logits at index tokenNl
+
+              -- todo: other sampling methods
+              -- id' <- L.sampleTokenGreedy ctx candidatesPPtr
+
+              L.sampleTopK ctx candidatesPPtr topK 1
+              L.sampleTailFree ctx candidatesPPtr tfsZ 1
+              L.sampleTypical ctx candidatesPPtr typicalP 1
+              L.sampleTopP ctx candidatesPPtr topP 1
+              L.sampleTemperature ctx candidatesPPtr temp
+              id' <- L.sampleToken ctx candidatesPPtr
+
+              this <- peekCString =<< L.tokenToStr ctx id'
+
+              putStr $ this <> " "
+
+              void $ withArray [id'] $ \newTokenArrPtr ->
+                L.eval ctx newTokenArrPtr 1 (fromIntegral nPast + fromIntegral pn + 1) nThreads
+
+              atomically . writeTVar lastNTokens $
+                drop 1 lastNTokens' <> [id']
+
+    cleanup :: L.Context -> L.Model -> IO ()
+    cleanup ctx model = do
+      putStrLn "\n\nfreeing model"
+
+      L.printTimings ctx
+
+      L.free ctx
       L.freeModel model
+
+      L.freeBackend

@@ -43,8 +43,10 @@
                 modifier = (t.flip t.pipe) [
                   addBuildTools
                   hl.dontHaddock
+                  hl.enableExecutableProfiling
                   (drv: hl.overrideCabal drv (attrs: {
                     configureFlags = [
+                      "--ghc-options=-fprof-auto"
                       "--extra-include-dirs=${llama-cpp-with-includes}/include"
                       "--extra-lib-dirs=${llama-cpp-with-includes}/lib"
                     ];
