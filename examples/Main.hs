@@ -1,15 +1,16 @@
 module Main where
 
-import Control.Exception (bracket, finally)
-import Data.Foldable (foldlM, for_)
+import Control.Exception (bracket)
+import Data.Foldable (for_)
 import Data.Functor ((<&>), void)
+import Data.Maybe (fromJust)
 import qualified Data.Vector.Storable as V
 import qualified LLaMACPP as L
 import Foreign.C.String (peekCString, withCString)
 import Foreign.C.Types (CFloat, CInt)
 import Foreign.ForeignPtr (newForeignPtr_)
-import Foreign.Marshal.Alloc (alloca)
-import Foreign.Marshal.Array (allocaArray, copyArray, newArray, peekArray, pokeArray, withArray)
+import Foreign.Marshal.Alloc (free, malloc)
+import Foreign.Marshal.Array (allocaArray, copyArray, newArray, mallocArray, peekArray, pokeArray, withArray)
 import Foreign.Marshal.Utils (fromBool)
 import Foreign.Ptr (Ptr)
 import Foreign.Storable (Storable(peek, poke))
@@ -40,6 +41,44 @@ import GHC.Conc (TVar, atomically, newTVarIO, readTVarIO, writeTVar)
 --   * after every token generated, the token is fed back in and eval'ed so sampling takes that into account on the next pass
 --
 
+data Params = Params
+  { _nCtx :: CInt
+  , _nThreads :: CInt
+  , _nPredict :: CInt
+  , _nGpuLayers :: CInt
+  , _enableNumaOpts :: Bool
+  , _modelPath :: Maybe String
+  , _alphaFrequency :: CFloat
+  , _alphaPresence :: CFloat
+  , _penalizeNl :: Bool
+  , _repeatPenalty :: CFloat
+  , _topK :: CInt    -- <= 0 to use vocab size
+  , _topP :: CFloat -- 1.0 = disabled
+  , _tfsZ :: CFloat -- 1.0 = disabled
+  , _typicalP :: CFloat -- 1.0 = disabled
+  , _temp :: CFloat -- 1.0 = disabled
+  }
+  deriving (Eq, Show)
+
+-- mostly from examples/common.h
+defaultParams :: Params
+defaultParams = Params
+  { _nCtx = 2048
+  , _nThreads = 8
+  , _nPredict = 50
+  , _nGpuLayers = 32
+  , _enableNumaOpts = False
+  , _modelPath = Nothing
+  , _alphaFrequency = 0.0
+  , _alphaPresence = 0.0
+  , _penalizeNl = False
+  , _repeatPenalty = 1.1
+  , _topK = 40    -- <= 0 to use vocab size
+  , _topP = 0.95 -- 1.0 = disabled
+  , _tfsZ = 1.00 -- 1.0 = disabled
+  , _typicalP = 1.00 -- 1.0 = disabled
+  , _temp = 0.80 -- 1.0 = disabled
+  }
 
 main :: IO ()
 main = do
@@ -61,227 +100,197 @@ main = do
   -- (or interactive, instead of -p: -i -ins)
 
   let
-    nPredict = 50
-    nThreads = 8
-    nCtx = 2048 -- 2048
-    nCtxInt = fromIntegral nCtx
-    nGpuLayers = 32
-    enableNumaOpts = False
+    params = defaultParams
+      { _modelPath =
+          Just "/home/dd/code/ai/models/open-llama-7b-v2-open-instruct.ggmlv3.q5_K_M.bin"
+      , _temp = 0.7
+      }
 
   -- TODO:
   --   dump out build info
-  --   generate default seed
+  --   generate default seed?
 
-  putStrLn "\ninitBackend"
+  bracket
+     (do
+         putStrLn "\ninitBackend"
+         L.initBackend (_enableNumaOpts params)
 
-  L.initBackend enableNumaOpts
+         -- todo
+         -- putStrLn "\ndefault model quantize params"
 
-  putStrLn "\ndefault model quantize params"
+         cpp <- malloc :: IO L.ContextParamsPtr
+         putStrLn "\ninit context params"
+         L.contextDefaultParams cpp
+         ctxParams' <- peek cpp
 
-  --
-  -- * start llama_init_from_gpt_params *
-  --
-  -- * part of llama.cpp examples common namespace
-  -- * initializes params that were passed as arguments
-  -- * internally calls
-  --   context_default_params
-  --   load_model_from_file
-  --   new_context_with_model (if fails calls free_model)
-  --   model_apply_lora_from_file if lora_adapter is not empty (free/free_model if fails on cleanup)
-  -- * returns a tuple with the model and context initialized
+         let
+           ctxParams = ctxParams'
+             { L._nCtx = (_nCtx params)
+             , L._nGpuLayers = (_nGpuLayers params)
+             }
 
-  -- this is what is set in common.cpp's
-  --   llama_context_params_from_gpt_params:
+         poke cpp ctxParams
 
-  -- lparams.n_ctx        = params.n_ctx;
-  -- lparams.n_gpu_layers = params.n_gpu_layers;
-  -- -- (from here below is todo)
-  -- lparams.main_gpu     = params.main_gpu;
-  -- lparams.n_batch      = params.n_batch;
-  -- memcpy(lparams.tensor_split, params.tensor_split, LLAMA_MAX_DEVICES*sizeof(float));
-  -- lparams.low_vram     = params.low_vram;
-  -- lparams.seed         = params.seed;
-  -- lparams.f16_kv       = params.memory_f16;
-  -- lparams.use_mmap     = params.use_mmap;
-  -- lparams.use_mlock    = params.use_mlock;
-  -- lparams.logits_all   = params.perplexity;
-  -- lparams.embedding    = params.embedding;
+         putStrLn "\nloading model"
 
-  alloca $ \(cpp :: L.ContextParamsPtr) -> do
-    putStrLn "\ninit context params"
-    L.contextDefaultParams cpp
-    ctxParams' <- peek cpp
+         model <- withCString
+           -- (-_-;)
+           (fromJust $ _modelPath params) $ flip L.loadModelFromFile cpp
 
-    let
-      ctxParams = ctxParams'
-        { L._nCtx = nCtx
-        , L._nGpuLayers = nGpuLayers
-        }
+         putStrLn "\nloading context"
 
-    poke cpp ctxParams
+         ctx <- L.newContextWithModel model cpp
+         pure (cpp, ctx, model)
+     )
 
-    putStrLn "\nloading model"
+     cleanup
 
-    model <- withCString
-      "/home/dd/code/ai/models/open-llama-7b-v2-open-instruct.ggmlv3.q5_K_M.bin"
-      (flip L.loadModelFromFile cpp)
+     (\(_cpp, ctx, _model) -> do
+         putStrLn "\nSystem Info:"
+         putStrLn =<< peekCString =<< L.printSystemInfo
 
-    putStrLn "\nloading context"
+         -- tokenizing & eval
 
-    ctx <- L.newContextWithModel model cpp
+         -- "do one empty run to warm up the model"
+         allocaArray 1 $ \(tmp :: Ptr L.Token) -> do
+           bos <- L.tokenBos
+           pokeArray tmp [bos]
+           _evalRes <- L.eval ctx tmp 1 0 (_nThreads params)
+           L.resetTimings ctx
 
-    -- skipping Lora stuff until I can get a bare minimum POC up and running
+         let
+           testString = "Instruction: What is a great way to scare a chicken? Response:\n"
+           maxTokens = 1024
+           tokenize s tks addBos = L.tokenize ctx s tks (fromIntegral maxTokens) (fromBool addBos)
 
-    putStrLn "\nSystem Info:"
+         tokenized <- allocaArray maxTokens $ \tokensPtr -> do
+           tokenizedCount <- withCString testString $ \ts -> tokenize ts tokensPtr True
 
-    putStrLn =<< peekCString =<< L.printSystemInfo
+           putStrLn "\nPrompt"
+           putStrLn $ testString <> "\n\n"
 
-    -- tokenizing & eval
+           putStrLn $ "\nTokenized " <> show tokenizedCount
 
-    -- "do one empty run to warm up the model"
-    allocaArray 1 $ \(tmp :: Ptr L.Token) -> do
-      bos <- L.tokenBos
-      pokeArray tmp [bos]
-      _evalRes <- L.eval ctx tmp 1 0 nThreads
-      L.resetTimings ctx
+           putStrLn $ "\nRunning first eval of entire prompt"
+           _evalRes <- L.eval ctx tokensPtr tokenizedCount 0 (_nThreads params)
 
-    let
-      testString = "Instruction: I have five pears, what recipe can I make? Response:\n"
-      maxTokens = 1024
-      tokenize s tks addBos = L.tokenize ctx s tks (fromIntegral maxTokens) (fromBool addBos)
-
-    tokenized <- allocaArray maxTokens $ \tokensPtr -> do
-      tokenizedCount <- withCString testString $ \ts -> tokenize ts tokensPtr True
-
-      putStrLn $ "\nTokenized " <> show tokenizedCount
-
-      _evalRes <- L.eval ctx tokensPtr tokenizedCount 0 nThreads
-
-      putStrLn "\ntokenized, eval'ed our string"
-
-      peekArray (fromIntegral tokenizedCount) tokensPtr
+           peekArray (fromIntegral tokenizedCount) tokensPtr
 
 
-    -- sampling
+         -- sampling
 
-    let
-      remainderLength = 64 - length tokenized
+         putStrLn $ "\nsampling"
 
-    -- we want to feed everything into the repetition penalizing algo
-    lastNTokens :: TVar [L.Token] <- newTVarIO $
-      replicate remainderLength 0 <> tokenized
+         let
+           remainderLength = 64 - length tokenized
 
-    putStrLn "\n"
-    putStrLn $ testString <> "\n\n"
+         -- we want to feed everything into the repetition penalizing algo
+         lastNTokens :: TVar [L.Token] <- newTVarIO $
+           replicate remainderLength 0 <> tokenized
 
-    finally
-      (sample ctx (fromIntegral nCtx) nPredict nThreads lastNTokens (length tokenized))
-      (cleanup ctx model)
+         sample params ctx lastNTokens (length tokenized)
+     )
 
   where
-    sample :: L.Context -> Int -> Int -> CInt -> TVar [L.Token] -> Int -> IO ()
-    sample ctx nCtx nPredict nThreads lastNTokens nPast =
-      for_ [0..(nPredict - 1)] $ \pn ->
-        alloca $ \candidatesPPtr -> do
-          nVocab <- L.nVocab ctx
-          let nVocabInt = fromIntegral nVocab
-          allocaArray nVocabInt $ \logitsCopyPtr -> do
-            -- logits are a multidimensional array:
-            -- logits[_vocab][n_tokens], as best as I can tell from how
-            -- it's used ("rows/cols" as described in the docstring
-            -- seems backwards)
-            logitsPtr <- L.getLogits ctx
-            copyArray logitsCopyPtr logitsPtr nVocabInt
-            logitsCopyFPtr <- newForeignPtr_ logitsCopyPtr
+    sample :: Params -> L.Context -> TVar [L.Token] -> Int -> IO ()
+    sample params ctx lastNTokens nPast =
+      for_ [0..(_nPredict params - 1)] $ \pn -> do
+        nVocab <- fromIntegral <$> L.nVocab ctx
 
-            let
-              logitsCopy = V.unsafeFromForeignPtr0 logitsCopyFPtr nVocabInt
+        candidatesPPtr <- malloc
+        logitsCopyPtr <- mallocArray nVocab
 
-              candidates = [0..(nVocabInt - 1)] <&> \n ->
-                L.TokenData (fromIntegral n) (V.unsafeIndex logitsCopy n) 0.0
+        -- logits are a multidimensional array:
+        -- logits[_vocab][n_tokens], as best as I can tell from how
+        -- it's used ("rows/cols" as described in the docstring
+        -- seems backwards)
+        logitsPtr <- L.getLogits ctx
+        copyArray logitsCopyPtr logitsPtr nVocab
+        logitsCopyFPtr <- newForeignPtr_ logitsCopyPtr
 
-            candidatesPtr <- newArray candidates
+        let
+          logitsCopy = V.unsafeFromForeignPtr0 logitsCopyFPtr nVocab
 
-            let
-              candidatesP =
-                L.TokenDataArray candidatesPtr (fromIntegral nVocab) False
+          candidates = [0..(nVocab - 1)] <&> \n ->
+            L.TokenData (fromIntegral n) (V.unsafeIndex logitsCopy n) 0.0
 
-            poke candidatesPPtr candidatesP
+        candidatesPtr <- newArray candidates
 
-            lastNTokens' <- readTVarIO lastNTokens
+        let
+          candidatesP =
+            L.TokenDataArray candidatesPtr (fromIntegral nVocab) False
 
-            -- penalties
-            let
-              alphaFrequency = 0.0 :: CFloat
-              alphaPresence = 0.0 :: CFloat
-              penalizeNl = False
-              repeatPenalty = 1.1
+        poke candidatesPPtr candidatesP
 
-              -- sampling defaults from common.h
-              topK = 40    -- <= 0 to use vocab size
-              topP = 0.95 -- 1.0 = disabled
-              tfsZ = 1.00 -- 1.0 = disabled
-              typicalP = 1.00 -- 1.0 = disabled
-              temp = 0.80 -- 1.0 = disabled
+        lastNTokens' <- readTVarIO lastNTokens
 
-              lastNTokensLen = fromIntegral . length $ lastNTokens'
+        -- penalties
 
-            withArray lastNTokens' $ \(lastNTokensPtr :: Ptr L.Token) -> do
-              -- putStrLn $ "\nlastNRepeat: " <> show lastNRepeat
-              -- putStrLn $ "\nlastNTokens': " <> show lastNTokensLen
-              -- putStrLn $ "\nlastNTokens': " <> show lastNTokens'
+        withArray lastNTokens' $ \(lastNTokensPtr :: Ptr L.Token) -> do
+          let
+            lastNTokensLen = fromIntegral . length $ lastNTokens'
 
-              -- float nl_logit = logits[llama_token_nl()];
-              _nlLogit <- V.unsafeIndex logitsCopy . fromIntegral <$> L.tokenNl
+          -- putStrLn $ "\nlastNRepeat: " <> show lastNRepeat
+          -- putStrLn $ "\nlastNTokens': " <> show lastNTokensLen
+          -- putStrLn $ "\nlastNTokens': " <> show lastNTokens'
 
-              -- llama_sample_repetition_penalty(ctx, &candidates_p,
-              --     last_n_tokens.data() + last_n_tokens.size() - last_n_repeat,
-              --     last_n_repeat, repeat_penalty);
+          -- float nl_logit = logits[llama_token_nl()];
+          _nlLogit <- V.unsafeIndex logitsCopy . fromIntegral <$> L.tokenNl
 
-              -- lastNTokensPtr should be a pointer just to the last
-              -- set of tokens at the end of lastNTokens matching the
-              -- count of lastNRepeat
-              L.sampleRepetitionPenalty ctx candidatesPPtr lastNTokensPtr lastNTokensLen repeatPenalty
+          --
+          -- lastNTokensPtr should be a pointer just to the last
+          -- set of tokens at the end of lastNTokens matching the
+          -- count of lastNRepeat, right now it's the entire thing
+          --
+          L.sampleRepetitionPenalty
+            ctx candidatesPPtr lastNTokensPtr lastNTokensLen (_repeatPenalty params)
 
-              --  llama_sample_frequency_and_presence_penalties(ctx, &candidates_p,
-              --      last_n_tokens.data() + last_n_tokens.size() - last_n_repeat,
-              --      last_n_repeat, alpha_frequency, alpha_presence);
+          L.sampleFrequencyAndPresencePenalties
+            ctx
+            candidatesPPtr
+            lastNTokensPtr
+            lastNTokensLen
+            (_alphaFrequency params)
+            (_alphaPresence params)
 
-              L.sampleFrequencyAndPresencePenalties
-                ctx candidatesPPtr lastNTokensPtr lastNTokensLen alphaFrequency alphaPresence
+          -- todo
+          -- if (!penalize_nl) {
+          --     logits[llama_token_nl()] = nl_logit;
+          -- }
+          -- insert nlLogit into logits at index tokenNl
 
-              -- if (!penalize_nl) {
-              --     logits[llama_token_nl()] = nl_logit;
-              -- }
-              -- insert nlLogit into logits at index tokenNl
+          -- todo: other sampling methods
+          -- id' <- L.sampleTokenGreedy ctx candidatesPPtr
 
-              -- todo: other sampling methods
-              -- id' <- L.sampleTokenGreedy ctx candidatesPPtr
+          L.sampleTopK ctx candidatesPPtr (_topK params) 1
+          L.sampleTailFree ctx candidatesPPtr (_tfsZ params) 1
+          L.sampleTypical ctx candidatesPPtr (_typicalP params) 1
+          L.sampleTopP ctx candidatesPPtr (_topP params) 1
+          L.sampleTemperature ctx candidatesPPtr (_temp params)
+          id' <- L.sampleToken ctx candidatesPPtr
 
-              L.sampleTopK ctx candidatesPPtr topK 1
-              L.sampleTailFree ctx candidatesPPtr tfsZ 1
-              L.sampleTypical ctx candidatesPPtr typicalP 1
-              L.sampleTopP ctx candidatesPPtr topP 1
-              L.sampleTemperature ctx candidatesPPtr temp
-              id' <- L.sampleToken ctx candidatesPPtr
+          this <- peekCString =<< L.tokenToStr ctx id'
 
-              this <- peekCString =<< L.tokenToStr ctx id'
+          putStr this
 
-              putStr $ this <> " "
+          void $ withArray [id'] $ \newTokenArrPtr ->
+            L.eval
+              ctx newTokenArrPtr 1 (fromIntegral nPast + fromIntegral pn + 1) (_nThreads params)
 
-              void $ withArray [id'] $ \newTokenArrPtr ->
-                L.eval ctx newTokenArrPtr 1 (fromIntegral nPast + fromIntegral pn + 1) nThreads
+          atomically . writeTVar lastNTokens $
+            drop 1 lastNTokens' <> [id']
 
-              atomically . writeTVar lastNTokens $
-                drop 1 lastNTokens' <> [id']
+        free candidatesPPtr
+        free logitsCopyPtr
 
-    cleanup :: L.Context -> L.Model -> IO ()
-    cleanup ctx model = do
-      putStrLn "\n\nfreeing model"
+    cleanup :: (Ptr L.ContextParams, L.Context, L.Model) -> IO ()
+    cleanup (cpp, ctx, model) = do
+      putStrLn "\n\nfreeing context, model, context params"
 
       L.printTimings ctx
 
       L.free ctx
       L.freeModel model
+      free cpp
 
       L.freeBackend

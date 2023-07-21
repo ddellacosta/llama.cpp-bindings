@@ -22,6 +22,10 @@
               mkdir -p $out/include
               cp *.a $out/lib/
               cp $src/*.h $out/include/
+              # I don't think ghc/c2hs can process common.h because
+              # it is C++, but it contains default params that I want to
+              # auto-import somehow
+              cp $src/examples/*.h $out/include/
             '';
           });
 
@@ -34,8 +38,6 @@
             ]);
           in
               haskellPackages.developPackage {
-                # this prevents CHANGELOG/LICENSE/etc. from being found
-                # root = lib.sourceFilesBySuffices ./. [ ".cabal" ".hs" ];
                 root = ./.;
                 name = name;
                 returnShellEnv = !(devTools == []);
@@ -56,12 +58,12 @@
 
       in {
         packages = {
-          pkg = project [ ]; # [3]
+          pkg = project [ ];
           default = self.packages.${system}.pkg;
           llama-cpp = llama-cpp-with-includes;
         };
 
-        devShell = project (with haskellPackages; [ # [4]
+        devShell = project (with haskellPackages; [
           cabal-fmt
           cabal-install
           haskell-language-server
