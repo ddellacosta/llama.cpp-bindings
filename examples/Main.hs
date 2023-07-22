@@ -1,9 +1,9 @@
 module Main where
 
+import Control.Applicative ((<**>))
 import Control.Exception (bracket)
 import Data.Foldable (for_)
 import Data.Functor ((<&>), void)
-import Data.Maybe (fromJust)
 import qualified Data.Vector.Storable as V
 import qualified LLaMACPP as L
 import Foreign.C.String (peekCString, withCString)
@@ -15,7 +15,25 @@ import Foreign.Marshal.Utils (fromBool)
 import Foreign.Ptr (Ptr)
 import Foreign.Storable (Storable(peek, poke))
 import GHC.Conc (TVar, atomically, newTVarIO, readTVarIO, writeTVar)
-
+import Options.Applicative
+  ( ParseError(..)
+  , Parser
+  , auto
+  , execParser
+  , fullDesc
+  , help
+  , helper
+  , info
+  , long
+  , noArgError
+  , option
+  , progDesc
+  , short
+  , showDefault
+  , strOption
+  , switch
+  , value
+  )
 
 --
 -- ## Notes on main.cpp
@@ -47,7 +65,8 @@ data Params = Params
   , _nPredict :: CInt
   , _nGpuLayers :: CInt
   , _enableNumaOpts :: Bool
-  , _modelPath :: Maybe String
+  , _prompt :: String
+  , _modelPath :: String
   , _alphaFrequency :: CFloat
   , _alphaPresence :: CFloat
   , _penalizeNl :: Bool
@@ -60,51 +79,62 @@ data Params = Params
   }
   deriving (Eq, Show)
 
--- mostly from examples/common.h
-defaultParams :: Params
-defaultParams = Params
-  { _nCtx = 2048
-  , _nThreads = 8
-  , _nPredict = 50
-  , _nGpuLayers = 32
-  , _enableNumaOpts = False
-  , _modelPath = Nothing
-  , _alphaFrequency = 0.0
-  , _alphaPresence = 0.0
-  , _penalizeNl = False
-  , _repeatPenalty = 1.1
-  , _topK = 40    -- <= 0 to use vocab size
-  , _topP = 0.95 -- 1.0 = disabled
-  , _tfsZ = 1.00 -- 1.0 = disabled
-  , _typicalP = 1.00 -- 1.0 = disabled
-  , _temp = 0.80 -- 1.0 = disabled
-  }
+paramsParser :: Parser Params
+paramsParser = Params
+  <$> option auto ( long "n_ctx" <> value 512 <> showDefault <> help "context size" )
+  <*> option auto ( long "n_threads" <> short 't' <> value 1 <> showDefault <> help "cpu physical cores" )
+  -- the llama.cpp options set -1 to be infinite generation here,
+  -- but I'd rather not use that convention...but haven't
+  -- determined what I want to replace it with yet.
+  <*> option auto ( long "n_predict" <> value 50 <> showDefault <> help "new tokens to predict" )
+  <*> option auto (
+        long "n_gpu_layers" <>
+        value 0 <>
+        showDefault <>
+        help "number of layers to store in VRAM"
+      )
+  <*> switch (
+        long "enable_numa_opts" <>
+        help "attempt optimizations that help on some NUMA systems"
+      )
+  <*> strOption (
+       long "prompt" <>
+       short 'p' <>
+       help "prompt" <>
+       (noArgError . ExpectsArgError $ "you must supply a prompt")
+     )
+  <*> strOption (
+       long "model_path" <>
+       short 'm' <>
+       help "path to model" <>
+       (noArgError . ExpectsArgError $ "you must supply a model path")
+     )
+  <*> option auto ( long "alpha_freq" <> value 0.0 <> showDefault <> help "" )
+  <*> option auto ( long "alpha_pres" <> value 0.0 <> showDefault <> help "" )
+  <*> switch ( long "penalize_nl" <> showDefault <> help "" )
+  <*> option auto ( long "repeat_penalty" <> value 1.1 <> showDefault <> help "" )
+  <*> option auto ( long "top_k" <> value 40 <> showDefault <> help "" )
+  <*> option auto ( long "top_p" <> value 0.95 <> showDefault <> help "" )
+  <*> option auto ( long "tfs_z" <> value 1.0 <> showDefault <> help "" )
+  <*> option auto ( long "typical_p" <> value 1.0 <> showDefault <> help "" )
+  <*> option auto ( long "temp" <> value 0.8 <> showDefault <> help "" )
+
+-- mimicking call here, somewhat: https://huggingface.co/TheBloke/open-llama-7B-v2-open-instruct-GGML#how-to-run-in-llamacpp 
+-- result/bin/examples +RTS -xc -RTS -m ../models/open-llama-7b-v2-open-instruct.ggmlv3.q5_K_M.bin --n_ctx 2048 --temp 0.7 -t 8 --n_gpu_layers 32 -p "what is a good tomato recipe?"
+
 
 main :: IO ()
 main = do
 
   -- load/initialize params
 
-  -- from https://huggingface.co/TheBloke/open-llama-7B-v2-open-instruct-GGML
-  -- ./main
-  --   -t 10        -- threads to run on
-  --   -ngl 32      -- number of layers to store in VRAM
-  --   -m open-llama-7b-v2-open-instruct.ggmlv3.q4_0.bin
-  --   --color      -- colorize output
-  --   -c 2048      -- size of prompt context
-  --   --temp 0.7   -- temperature -- sampling tuning
-  --   --repeat_penalty 1.1 -- sampling tuning
-  --   -n -1 -- number of tokens to predict, -1 is infinity, just used
-  --            to loop around in interactive mode
-  --   -p "### Instruction: Write a story about llamas\n### Response:"
-  -- (or interactive, instead of -p: -i -ins)
-
   let
-    params = defaultParams
-      { _modelPath =
-          Just "/home/dd/code/ai/models/open-llama-7b-v2-open-instruct.ggmlv3.q5_K_M.bin"
-      , _temp = 0.7
-      }
+    opts = info (paramsParser <**> helper)
+      ( fullDesc
+     <> progDesc "run a single prompt (for now) against a model"
+      )
+
+  params <- execParser opts
 
   -- TODO:
   --   dump out build info
@@ -129,15 +159,15 @@ main = do
            L.resetTimings ctx
 
          let
-           testString = "Instruction: What is a great way to scare a chicken? Response:\n"
            maxTokens = 1024
-           tokenize s tks addBos = L.tokenize ctx s tks (fromIntegral maxTokens) (fromBool addBos)
+           tokenize s tks addBos =
+             L.tokenize ctx s tks (fromIntegral maxTokens) (fromBool addBos)
 
          tokenized <- allocaArray maxTokens $ \tokensPtr -> do
-           tokenizedCount <- withCString testString $ \ts -> tokenize ts tokensPtr True
+           tokenizedCount <- withCString (_prompt params) $ \ts -> tokenize ts tokensPtr True
 
            putStrLn "\nPrompt"
-           putStrLn $ testString <> "\n\n"
+           putStrLn $ (_prompt params) <> "\n\n"
 
            putStrLn $ "\nTokenized " <> show tokenizedCount
 
@@ -277,9 +307,7 @@ main = do
 
       putStrLn "\nloading model"
 
-      model <- withCString
-        -- (-_-;)
-        (fromJust $ _modelPath params) $ flip L.loadModelFromFile cpp
+      model <- withCString (_modelPath params) $ flip L.loadModelFromFile cpp
 
       putStrLn "\nloading context"
 

@@ -17,11 +17,22 @@ extra-doc-files:    CHANGELOG.md
 
 common shared
   ghc-options: -Wall
+  default-language: GHC2021
 
   build-depends:
       base ^>= 4.17.1.0
     , lens ^>= 5.2.2
+    , optparse-applicative ^>= 0.17.1.0
+    , text ^>= 2.0.2
     , vector ^>= 0.12.3.1
+
+  default-extensions:
+      DeriveGeneric
+    , LambdaCase
+    , OverloadedStrings
+    , StrictData
+    , TupleSections
+
     
 library
   import:              shared
