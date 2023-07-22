@@ -111,37 +111,7 @@ main = do
   --   generate default seed?
 
   bracket
-     (do
-         putStrLn "\ninitBackend"
-         L.initBackend (_enableNumaOpts params)
-
-         -- todo
-         -- putStrLn "\ndefault model quantize params"
-
-         cpp <- malloc :: IO L.ContextParamsPtr
-         putStrLn "\ninit context params"
-         L.contextDefaultParams cpp
-         ctxParams' <- peek cpp
-
-         let
-           ctxParams = ctxParams'
-             { L._nCtx = (_nCtx params)
-             , L._nGpuLayers = (_nGpuLayers params)
-             }
-
-         poke cpp ctxParams
-
-         putStrLn "\nloading model"
-
-         model <- withCString
-           -- (-_-;)
-           (fromJust $ _modelPath params) $ flip L.loadModelFromFile cpp
-
-         putStrLn "\nloading context"
-
-         ctx <- L.newContextWithModel model cpp
-         pure (cpp, ctx, model)
-     )
+     (initialize params)
 
      cleanup
 
@@ -282,6 +252,40 @@ main = do
 
         free candidatesPPtr
         free logitsCopyPtr
+
+
+    initialize :: Params -> IO (Ptr L.ContextParams, L.Context, L.Model)
+    initialize params = do
+      putStrLn "\ninitBackend"
+      L.initBackend (_enableNumaOpts params)
+
+      -- todo
+      -- putStrLn "\ndefault model quantize params"
+
+      cpp <- malloc
+      putStrLn "\ninit context params"
+      L.contextDefaultParams cpp
+      ctxParams' <- peek cpp
+
+      let
+        ctxParams = ctxParams'
+          { L._nCtx = (_nCtx params)
+          , L._nGpuLayers = (_nGpuLayers params)
+          }
+
+      poke cpp ctxParams
+
+      putStrLn "\nloading model"
+
+      model <- withCString
+        -- (-_-;)
+        (fromJust $ _modelPath params) $ flip L.loadModelFromFile cpp
+
+      putStrLn "\nloading context"
+
+      ctx <- L.newContextWithModel model cpp
+      pure (cpp, ctx, model)
+
 
     cleanup :: (Ptr L.ContextParams, L.Context, L.Model) -> IO ()
     cleanup (cpp, ctx, model) = do
