@@ -2,8 +2,6 @@
 
 llama.cpp bindings for Haskell.
 
-## Examples
-
 See examples/Main.hs -- attempts to mimic a subset of the functionality of llama.cpp's main example functionality:
 
 ```bash
@@ -58,7 +56,7 @@ llama_print_timings:      sample time =    22.63 ms /    50 runs   (    0.45 ms 
 llama_print_timings: prompt eval time =  1879.72 ms /    18 tokens (  104.43 ms per token,     9.58 tokens per second)
 llama_print_timings:        eval time =  6072.97 ms /    50 runs   (  121.46 ms per token,     8.23 tokens per second)
 llama_print_timings:       total time =  8298.26 ms
-$ 
+> 
 ```
 
 ## Status
