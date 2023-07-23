@@ -253,6 +253,13 @@ instance Storable ModelQuantizeParams where
 
 
 --
+-- LLAMA_API int llama_max_devices();
+--
+maxDevices :: IO CInt
+maxDevices = {# call max_devices #}
+
+
+--
 -- LLAMA_API struct llama_context_params llama_context_default_params();
 --
 --
@@ -265,7 +272,6 @@ contextDefaultParams = {# call wrapper_context_default_params #}
 --
 modelQuantizeDefaultParams :: ModelQuantizeParamsPtr -> IO ()
 modelQuantizeDefaultParams = {# call wrapper_model_quantize_default_params #}
-
 
 
 --
@@ -297,6 +303,7 @@ initBackend = {# call backend_init #} . fromBool
 --
 freeBackend :: IO ()
 freeBackend = {# call backend_free #}
+
 
 --
 -- LLAMA_API int64_t llama_time_us();
@@ -481,6 +488,15 @@ evalExport = {# call eval_export #}
 tokenize :: Context -> Ptr CChar -> Ptr Token -> CInt -> CUChar -> IO CInt
 tokenize = {# call tokenize #}
 
+-- LLAMA_API int llama_tokenize_with_model(
+--     const struct llama_model * model,
+--                   const char * text,
+--                  llama_token * tokens,
+--                          int   n_max_tokens,
+--                         bool   add_bos);
+tokenizeWithModel :: Model -> Ptr CChar -> Ptr Token -> CInt -> CUChar -> IO CInt
+tokenizeWithModel = {# call tokenize_with_model #}
+
 
 --
 -- LLAMA_API int llama_n_vocab(const struct llama_context * ctx);
@@ -499,6 +515,26 @@ nCtx = {# call n_ctx #}
 --
 nEmbd :: Context -> IO CInt
 nEmbd = {# call n_embd #}
+
+
+--
+-- LLAMA_API int llama_n_vocab_from_model(const struct llama_model * model);
+--
+nVocabFromModel :: Model -> IO CInt
+nVocabFromModel = {# call n_vocab_from_model #}
+
+--
+-- LLAMA_API int llama_n_ctx_from_model  (const struct llama_model * model);
+--
+nCtxFromModel :: Model -> IO CInt
+nCtxFromModel = {# call n_ctx_from_model #}
+
+
+--
+-- LLAMA_API int llama_n_embd_from_model (const struct llama_model * model);
+--
+nEmbdFromModel :: Model -> IO CInt
+nEmbdFromModel = {# call n_embd_from_model #}
 
 
 --
@@ -543,6 +579,13 @@ tokenToStr :: Context -> Token -> IO (Ptr CChar)
 tokenToStr = {# call token_to_str #}
 
 
+-- LLAMA_API const char * llama_token_to_str_with_model(
+--           const struct llama_model * model,
+--                        llama_token   token);
+tokenToStrWithModel :: Model -> Token -> IO (Ptr CChar)
+tokenToStrWithModel = {# call token_to_str_with_model #}
+
+
 -- // Special tokens
 
 --
@@ -583,6 +626,19 @@ sampleRepetitionPenalty = {# call sample_repetition_penalty #}
 sampleFrequencyAndPresencePenalties
   :: Context -> Ptr TokenDataArray -> Ptr Token -> CULong -> CFloat -> CFloat -> IO ()
 sampleFrequencyAndPresencePenalties = {# call sample_frequency_and_presence_penalties #} 
+
+
+-- /// @details Apply classifier-free guidance to the logits as described in academic paper "Stay on topic with Classifier-Free Guidance" https://arxiv.org/abs/2306.17806
+-- /// @param candidates A vector of `llama_token_data` containing the candidate tokens, the logits must be directly extracted from the original generation context without being sorted.
+-- /// @params guidance_ctx A separate context from the same model. Other than a negative prompt at the beginning, it should have all generated and user input tokens copied from the main context.
+-- /// @params scale Guidance strength. 1.0f means no guidance. Higher values mean stronger guidance.
+-- LLAMA_API void llama_sample_classifier_free_guidance(
+--           struct llama_context * ctx,
+--         llama_token_data_array * candidates,
+--           struct llama_context * guidance_ctx,
+--                          float   scale);
+sampleClassifierFreeGuidance :: Context -> TokenDataArrayPtr -> Context -> CFloat -> IO ()
+sampleClassifierFreeGuidance = {# call sample_classifier_free_guidance #}
 
 
 --
@@ -730,6 +786,13 @@ instance Storable Timings where
     {# set timings->n_sample #} p _nSample
     {# set timings->n_p_eval #} p _nPEval
     {# set timings->n_eval #} p _nEval
+
+
+--
+-- LLAMA_API struct llama_timings llama_get_timings(struct llama_context * ctx);
+--
+getTimings :: Context -> Ptr Timings -> IO ()
+getTimings = {# call wrapper_get_timings #}
 
 --
 -- LLAMA_API void llama_print_timings(struct llama_context * ctx);
