@@ -2,6 +2,7 @@ module Main where
 
 import Control.Applicative ((<**>))
 import Control.Exception (bracket)
+import Control.Monad (when)
 import Data.Foldable (for_)
 import Data.Functor ((<&>), void)
 import qualified Data.Vector.Storable as V
@@ -193,95 +194,100 @@ main = do
 
   where
     sample :: Params -> L.Context -> TVar [L.Token] -> Int -> IO ()
-    sample params ctx lastNTokens nPast =
-      for_ [0..(_nPredict params - 1)] $ \pn -> do
-        nVocab <- fromIntegral <$> L.nVocab ctx
+    sample params ctx lastNTokens nPast = do
+      nVocab <- fromIntegral <$> L.nVocab ctx
 
-        candidatesPPtr <- malloc
-        logitsCopyPtr <- mallocArray nVocab
+      candidatesPPtr <- malloc
+      logitsCopyPtr <- mallocArray nVocab
 
-        -- logits are a multidimensional array:
-        -- logits[_vocab][n_tokens], as best as I can tell from how
-        -- it's used ("rows/cols" as described in the docstring
-        -- seems backwards)
-        logitsPtr <- L.getLogits ctx
-        copyArray logitsCopyPtr logitsPtr nVocab
-        logitsCopyFPtr <- newForeignPtr_ logitsCopyPtr
+      -- logits are a multidimensional array:
+      -- logits[_vocab][n_tokens], as best as I can tell from how
+      -- it's used ("rows/cols" as described in the docstring
+      -- seems backwards)
+      logitsPtr <- L.getLogits ctx
+      copyArray logitsCopyPtr logitsPtr nVocab
+      logitsCopyFPtr <- newForeignPtr_ logitsCopyPtr
 
+      let
+        logitsCopy = V.unsafeFromForeignPtr0 logitsCopyFPtr nVocab
+
+        candidates = [0..(nVocab - 1)] <&> \n ->
+          L.TokenData (fromIntegral n) (V.unsafeIndex logitsCopy n) 0.0
+
+      candidatesPtr <- newArray candidates
+
+      let
+        candidatesP =
+          L.TokenDataArray candidatesPtr (fromIntegral nVocab) False
+
+      poke candidatesPPtr candidatesP
+
+      lastNTokens' <- readTVarIO lastNTokens
+
+      -- penalties
+
+      withArray lastNTokens' $ \(lastNTokensPtr :: Ptr L.Token) -> do
         let
-          logitsCopy = V.unsafeFromForeignPtr0 logitsCopyFPtr nVocab
+          lastNTokensLen = fromIntegral . length $ lastNTokens'
 
-          candidates = [0..(nVocab - 1)] <&> \n ->
-            L.TokenData (fromIntegral n) (V.unsafeIndex logitsCopy n) 0.0
+        -- putStrLn $ "\nlastNRepeat: " <> show lastNRepeat
+        -- putStrLn $ "\nlastNTokens': " <> show lastNTokensLen
+        -- putStrLn $ "\nlastNTokens': " <> show lastNTokens'
 
-        candidatesPtr <- newArray candidates
+        -- float nl_logit = logits[llama_token_nl()];
+        _nlLogit <- V.unsafeIndex logitsCopy . fromIntegral <$> L.tokenNl
 
-        let
-          candidatesP =
-            L.TokenDataArray candidatesPtr (fromIntegral nVocab) False
+        --
+        -- lastNTokensPtr should be a pointer just to the last
+        -- set of tokens at the end of lastNTokens matching the
+        -- count of lastNRepeat, right now it's the entire thing
+        --
+        L.sampleRepetitionPenalty
+          ctx candidatesPPtr lastNTokensPtr lastNTokensLen (_repeatPenalty params)
 
-        poke candidatesPPtr candidatesP
+        L.sampleFrequencyAndPresencePenalties
+          ctx
+          candidatesPPtr
+          lastNTokensPtr
+          lastNTokensLen
+          (_alphaFrequency params)
+          (_alphaPresence params)
 
-        lastNTokens' <- readTVarIO lastNTokens
+        -- todo
+        -- if (!penalize_nl) {
+        --     logits[llama_token_nl()] = nl_logit;
+        -- }
+        -- insert nlLogit into logits at index tokenNl
 
-        -- penalties
+      -- sampling
 
-        withArray lastNTokens' $ \(lastNTokensPtr :: Ptr L.Token) -> do
-          let
-            lastNTokensLen = fromIntegral . length $ lastNTokens'
+      -- todo: other sampling methods
+      -- id' <- L.sampleTokenGreedy ctx candidatesPPtr
 
-          -- putStrLn $ "\nlastNRepeat: " <> show lastNRepeat
-          -- putStrLn $ "\nlastNTokens': " <> show lastNTokensLen
-          -- putStrLn $ "\nlastNTokens': " <> show lastNTokens'
+      L.sampleTopK ctx candidatesPPtr (_topK params) 1
+      L.sampleTailFree ctx candidatesPPtr (_tfsZ params) 1
+      L.sampleTypical ctx candidatesPPtr (_typicalP params) 1
+      L.sampleTopP ctx candidatesPPtr (_topP params) 1
+      L.sampleTemperature ctx candidatesPPtr (_temp params)
+      id' <- L.sampleToken ctx candidatesPPtr
 
-          -- float nl_logit = logits[llama_token_nl()];
-          _nlLogit <- V.unsafeIndex logitsCopy . fromIntegral <$> L.tokenNl
+      this <- peekCString =<< L.tokenToStr ctx id'
 
-          --
-          -- lastNTokensPtr should be a pointer just to the last
-          -- set of tokens at the end of lastNTokens matching the
-          -- count of lastNRepeat, right now it's the entire thing
-          --
-          L.sampleRepetitionPenalty
-            ctx candidatesPPtr lastNTokensPtr lastNTokensLen (_repeatPenalty params)
+      putStr this
 
-          L.sampleFrequencyAndPresencePenalties
-            ctx
-            candidatesPPtr
-            lastNTokensPtr
-            lastNTokensLen
-            (_alphaFrequency params)
-            (_alphaPresence params)
+      void $ withArray [id'] $ \newTokenArrPtr ->
+        L.eval
+          ctx newTokenArrPtr 1 (fromIntegral nPast) (_nThreads params)
 
-          -- todo
-          -- if (!penalize_nl) {
-          --     logits[llama_token_nl()] = nl_logit;
-          -- }
-          -- insert nlLogit into logits at index tokenNl
+      atomically . writeTVar lastNTokens $
+        drop 1 lastNTokens' <> [id']
 
-          -- todo: other sampling methods
-          -- id' <- L.sampleTokenGreedy ctx candidatesPPtr
+      free candidatesPPtr
+      free logitsCopyPtr
 
-          L.sampleTopK ctx candidatesPPtr (_topK params) 1
-          L.sampleTailFree ctx candidatesPPtr (_tfsZ params) 1
-          L.sampleTypical ctx candidatesPPtr (_typicalP params) 1
-          L.sampleTopP ctx candidatesPPtr (_topP params) 1
-          L.sampleTemperature ctx candidatesPPtr (_temp params)
-          id' <- L.sampleToken ctx candidatesPPtr
-
-          this <- peekCString =<< L.tokenToStr ctx id'
-
-          putStr this
-
-          void $ withArray [id'] $ \newTokenArrPtr ->
-            L.eval
-              ctx newTokenArrPtr 1 (fromIntegral nPast + fromIntegral pn + 1) (_nThreads params)
-
-          atomically . writeTVar lastNTokens $
-            drop 1 lastNTokens' <> [id']
-
-        free candidatesPPtr
-        free logitsCopyPtr
+      eos <- L.tokenEos
+      when (eos /= id') $
+        sample params ctx lastNTokens (nPast + 1)
 
 
     initialize :: Params -> IO (Ptr L.ContextParams, L.Context, L.Model)

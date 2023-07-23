@@ -33,7 +33,6 @@ common shared
     , StrictData
     , TupleSections
 
-    
 library
   import:              shared
   build-tool-depends:  c2hs:c2hs
