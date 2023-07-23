@@ -1,6 +1,6 @@
 # llama.cpp-bindings
 
-llama.cpp bindings for Haskell.
+[llama.cpp](https://github.com/ggerganov/llama.cpp) bindings for Haskell.
 
 See examples/Main.hs -- attempts to mimic a subset of the functionality of llama.cpp's main example functionality:
 
