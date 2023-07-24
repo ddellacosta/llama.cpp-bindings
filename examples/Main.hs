@@ -2,7 +2,7 @@
 
 module Main where
 
-import Prelude hiding (putStr, putStrLn, takeWhile)
+import Prelude hiding (takeWhile)
 
 import Control.Lens (view)
 import Control.Lens.TH (makeFieldsNoPrefix)
@@ -41,7 +41,7 @@ import Options.Applicative
   , switch
   , value
   )
-import Pipes (Consumer, Producer, (>~), (>->), await, for, lift, runEffect, yield)
+import Pipes (Producer, (>->), for, runEffect, yield)
 import Pipes.Prelude (takeWhile)
 import qualified System.IO as IO
 
@@ -124,15 +124,6 @@ newtype ContextM a = ContextM (ReaderT Context IO a)
 runContextM :: Context -> ContextM () -> IO ()
 runContextM ctx (ContextM ctxM) = runReaderT ctxM ctx
 
--- this is probably just temporary until I start integrating this with
--- pipes and figure out what I really want
-class (MonadIO m) => Wrap m where
-  putStr :: String -> m ()
-  putStrLn :: String -> m ()
-
-instance Wrap ContextM where
-  putStr = liftIO . IO.putStr
-  putStrLn = liftIO . IO.putStrLn
 
 --
 
@@ -158,8 +149,8 @@ main = do
   where
     runLLaMA :: ContextM ()
     runLLaMA = do
-      putStrLn "\nSystem Info:"
-      liftIO $ IO.putStrLn =<< peekCString =<< L.printSystemInfo
+      liftIO . putStrLn $ "\nSystem Info:"
+      liftIO $ putStrLn =<< peekCString =<< L.printSystemInfo
 
       params' <- view params
       ctx <- view llamaCtx
@@ -181,16 +172,16 @@ main = do
       (tokenized, tokenizedCount) <- liftIO . allocaArray maxTokens $ \tokensPtr -> do
         tokenizedCount' <- withCString (_prompt params') $ \ts -> tokenize ts tokensPtr True
 
-        IO.putStrLn "\nPrompt"
-        IO.putStrLn $ _prompt params' <> "\n\n"
+        putStrLn "\nPrompt"
+        putStrLn $ _prompt params' <> "\n\n"
 
-        IO.putStrLn $ "\nTokenized " <> show tokenizedCount'
+        putStrLn $ "\nTokenized " <> show tokenizedCount'
 
-        IO.putStrLn $ "\nRunning first eval of entire prompt"
+        putStrLn "\nRunning first eval of entire prompt"
         _evalRes <- L.eval ctx tokensPtr tokenizedCount' 0 (_nThreads params')
 
-        peekArray (fromIntegral tokenizedCount') tokensPtr >>=
-          pure . (, tokenizedCount')
+        (, tokenizedCount') <$>
+          peekArray (fromIntegral tokenizedCount') tokensPtr
 
       -- update lastNTokens with the tokenized count
       lastNTokensTV <- view lastNTokens
@@ -203,11 +194,14 @@ main = do
         writeTVar lastNTokensTV $
           drop (fromIntegral tokenizedCount) lastNTokens' <> tokenized
 
-      putStrLn "\nsampling"
+      liftIO . putStrLn $ "\nsampling"
 
       eos <- liftIO L.tokenEos
-      -- I feel like this is not the right way to do this
-      runEffect $ for (sample >-> takeWhile (/= eos)) $ const (pure ())
+
+      -- I feel like this is not the right way to do this?
+      runEffect $
+        for (sample >-> takeWhile (/= eos)) $ const (pure ())
+
 
     sample :: Producer L.Token ContextM ()
     sample = do
@@ -271,10 +265,6 @@ main = do
           withArray lastNTokens' $ \(lastNTokensPtr :: Ptr L.Token) -> do
             let
               lastNTokensLen = fromIntegral . length $ lastNTokens'
-
-            -- putStrLn $ "\nlastNRepeat: " <> show lastNRepeat
-            -- putStrLn $ "\nlastNTokens': " <> show lastNTokensLen
-            -- putStrLn $ "\nlastNTokens': " <> show lastNTokens'
 
             -- float nl_logit = logits[llama_token_nl()];
             _nlLogit <- V.unsafeIndex logitsCopy . fromIntegral <$> L.tokenNl
