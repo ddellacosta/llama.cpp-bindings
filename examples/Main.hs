@@ -43,7 +43,6 @@ import Options.Applicative
   )
 import Pipes (Producer, (>->), for, runEffect, yield)
 import Pipes.Prelude (takeWhile)
-import qualified System.IO as IO
 
 data Params = Params
   { _nCtx :: CInt
@@ -226,7 +225,7 @@ main = do
           else nPast' + 1
         writeTVar lastNTokensTV $ drop 1 lastNTokens' <> [id']
 
-      liftIO $ IO.putStr =<< peekCString =<< L.tokenToStr ctx id'
+      liftIO $ putStr =<< peekCString =<< L.tokenToStr ctx id'
 
       yield id' *> sample
 
@@ -314,14 +313,14 @@ main = do
 
       params' <- execParser opts
 
-      IO.putStrLn "\ninitBackend"
+      putStrLn "\ninitBackend"
       L.initBackend (_enableNumaOpts params')
 
       -- todo
       -- putStrLn "\ndefault model quantize params"
 
       cpp <- malloc
-      IO.putStrLn "\ninit context params"
+      putStrLn "\ninit context params"
       L.contextDefaultParams cpp
       ctxParams' <- peek cpp
 
@@ -333,11 +332,11 @@ main = do
 
       poke cpp ctxParams
 
-      IO.putStrLn "\nloading model"
+      putStrLn "\nloading model"
 
       model' <- withCString (_modelPath params') $ flip L.loadModelFromFile cpp
 
-      IO.putStrLn "\nloading context"
+      putStrLn "\nloading context"
 
       ctx <- L.newContextWithModel model' cpp
       pure (params', cpp, ctx, model')
@@ -345,7 +344,7 @@ main = do
 
     cleanup :: (Params, Ptr L.ContextParams, L.Context, L.Model) -> IO ()
     cleanup (_params, cpp, ctx, model') = do
-      IO.putStrLn "\n\nfreeing context, model, context params"
+      putStrLn "\n\nfreeing context, model, context params"
 
       L.printTimings ctx
 
