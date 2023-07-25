@@ -56,7 +56,7 @@ data Params = Params
   , _alphaPresence :: CFloat
   , _penalizeNl :: Bool
   , _repeatPenalty :: CFloat
-  , _topK :: CInt    -- <= 0 to use vocab size
+  , _topK :: CInt   -- <= 0 to use vocab size
   , _topP :: CFloat -- 1.0 = disabled
   , _tfsZ :: CFloat -- 1.0 = disabled
   , _typicalP :: CFloat -- 1.0 = disabled
@@ -220,8 +220,8 @@ main = do
 
       liftIO . atomically $ do
         writeTVar nPastTV $
-          if nPast' >= (_nCtx params')
-          then (_nCtx params')
+          if nPast' >= _nCtx params'
+          then _nCtx params'
           else nPast' + 1
         writeTVar lastNTokensTV $ drop 1 lastNTokens' <> [id']
 
@@ -240,8 +240,8 @@ main = do
           -- it's used ("rows/cols" as described in the docstring
           -- seems backwards)
           logitsPtr <-  L.getLogits ctx
-          copyArray logitsCopyPtr logitsPtr $ nVocab
-          logitsCopyFPtr <- newForeignPtr_ $ logitsCopyPtr
+          copyArray logitsCopyPtr logitsPtr nVocab
+          logitsCopyFPtr <- newForeignPtr_ logitsCopyPtr
 
           let
             logitsCopy = V.unsafeFromForeignPtr0 logitsCopyFPtr nVocab
@@ -249,7 +249,7 @@ main = do
             candidates = [0..(nVocab - 1)] <&> \n ->
               L.TokenData (fromIntegral n) (V.unsafeIndex logitsCopy n) 0.0
 
-          candidatesPtr <- newArray $ candidates
+          candidatesPtr <- newArray candidates
 
           let
             candidatesP =
@@ -326,8 +326,8 @@ main = do
 
       let
         ctxParams = ctxParams'
-          { L._nCtx = (_nCtx params')
-          , L._nGpuLayers = (_nGpuLayers params')
+          { L._nCtx = _nCtx params'
+          , L._nGpuLayers = _nGpuLayers params'
           }
 
       poke cpp ctxParams
