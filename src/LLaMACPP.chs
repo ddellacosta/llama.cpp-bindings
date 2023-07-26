@@ -1,7 +1,8 @@
 
 module LLaMACPP where
 
-import Foreign.C.Types (CChar, CDouble, CFloat, CInt, CLong, CUChar, CUInt, CULong)
+import Data.Word (Word32)
+import Foreign.C.Types (CChar, CDouble, CFloat, CInt, CLong, CUChar, CULong)
 import Foreign.Marshal.Utils (fromBool, toBool)
 import Foreign.Ptr (FunPtr, Ptr, castPtr)
 import Foreign.Storable (Storable, alignment, peek, poke, sizeOf)
@@ -135,11 +136,11 @@ type ProgressCallback = CFloat -> Ptr () -> IO ()
 -- };
 --
 data ContextParams = ContextParams
-  { _seed :: CUInt
-  , _nCtx :: CInt
-  , _nBatch :: CInt
-  , _nGpuLayers :: CInt
-  , _mainGpu :: CInt
+  { _seed :: Word32
+  , _nCtx :: Int
+  , _nBatch :: Int
+  , _nGpuLayers :: Int
+  , _mainGpu :: Int
   , _tensorSplit :: Ptr CFloat
   , _progressCallback :: FunPtr ProgressCallback
   , _progressCallbackUserData :: Ptr ()
@@ -159,11 +160,11 @@ instance Storable ContextParams where
   sizeOf _ = {# sizeof context_params #}
   alignment _ = {# alignof context_params #}
   peek p = ContextParams
-    <$> {# get context_params->seed #} p
-    <*> {# get context_params->n_ctx #} p
-    <*> {# get context_params->n_batch #} p
-    <*> {# get context_params->n_gpu_layers #} p
-    <*> {# get context_params->main_gpu #} p
+    <$> (fromIntegral <$> {# get context_params->seed #} p)
+    <*> (fromIntegral <$> {# get context_params->n_ctx #} p)
+    <*> (fromIntegral <$> {# get context_params->n_batch #} p)
+    <*> (fromIntegral <$> {# get context_params->n_gpu_layers #} p)
+    <*> (fromIntegral <$> {# get context_params->main_gpu #} p)
     <*> {# get context_params->tensor_split #} p
     <*> {# get context_params->progress_callback #} p
     <*> {# get context_params->progress_callback_user_data #} p
@@ -175,11 +176,11 @@ instance Storable ContextParams where
     <*> {# get context_params->use_mlock #} p
     <*> {# get context_params->embedding #} p
   poke p cps = do 
-    {# set context_params->seed #} p $ _seed cps
-    {# set context_params->n_ctx #} p $ _nCtx cps
-    {# set context_params->n_batch #} p $ _nBatch cps
-    {# set context_params->n_gpu_layers #} p $ _nGpuLayers cps
-    {# set context_params->main_gpu #} p $ _mainGpu cps
+    {# set context_params->seed #} p $ fromIntegral $ _seed cps
+    {# set context_params->n_ctx #} p $ fromIntegral $ _nCtx cps
+    {# set context_params->n_batch #} p $ fromIntegral $ _nBatch cps
+    {# set context_params->n_gpu_layers #} p $ fromIntegral $ _nGpuLayers cps
+    {# set context_params->main_gpu #} p $ fromIntegral $ _mainGpu cps
     {# set context_params->tensor_split #} p $ _tensorSplit cps
     {# set context_params->progress_callback #} p $ _progressCallback cps
     {# set context_params->progress_callback_user_data #} p $ _progressCallbackUserData cps
@@ -385,8 +386,8 @@ getKVCacheTokenCount = {# call get_kv_cache_token_count #}
 -- // Sets the current rng seed.
 -- LLAMA_API void llama_set_rng_seed(struct llama_context * ctx, uint32_t seed);
 --
-setRNGSeed :: Context -> CUInt -> IO ()
-setRNGSeed = {# call set_rng_seed #}
+setRNGSeed :: Context -> Word32 -> IO ()
+setRNGSeed ctx = {# call set_rng_seed #} ctx . fromIntegral
 
 
 --
@@ -755,9 +756,9 @@ data Timings = Timings
   , _tSampleMs :: CDouble
   , _tPEvalMs :: CDouble
   , _tEvalMs :: CDouble
-  , _nSample :: CInt
-  , _nPEval :: CInt
-  , _nEval :: CInt
+  , _nSample :: Int
+  , _nPEval :: Int
+  , _nEval :: Int
   }
   deriving (Eq, Show)
 
@@ -773,9 +774,9 @@ instance Storable Timings where
     <*> {# get timings->t_sample_ms #} p
     <*> {# get timings->t_p_eval_ms #} p
     <*> {# get timings->t_eval_ms #} p
-    <*> {# get timings->n_sample #} p
-    <*> {# get timings->n_p_eval #} p
-    <*> {# get timings->n_eval #} p
+    <*> (fromIntegral <$> {# get timings->n_sample #} p)
+    <*> (fromIntegral <$> {# get timings->n_p_eval #} p)
+    <*> (fromIntegral <$> {# get timings->n_eval #} p)
   poke p (Timings _tStartMs _tEndMs _tLoadMs _tSampleMs _tPEvalMs _tEvalMs _nSample _nPEval _nEval) = do
     {# set timings->t_start_ms #} p _tStartMs
     {# set timings->t_end_ms #} p _tEndMs
@@ -783,9 +784,9 @@ instance Storable Timings where
     {# set timings->t_sample_ms #} p _tSampleMs
     {# set timings->t_p_eval_ms #} p _tPEvalMs
     {# set timings->t_eval_ms #} p _tEvalMs
-    {# set timings->n_sample #} p _nSample
-    {# set timings->n_p_eval #} p _nPEval
-    {# set timings->n_eval #} p _nEval
+    {# set timings->n_sample #} p $ fromIntegral _nSample
+    {# set timings->n_p_eval #} p $ fromIntegral _nPEval
+    {# set timings->n_eval #} p $ fromIntegral _nEval
 
 
 --

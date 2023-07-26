@@ -45,10 +45,10 @@ import Pipes (Producer, (>->), for, runEffect, yield)
 import Pipes.Prelude (takeWhile)
 
 data Params = Params
-  { _nCtx :: CInt
+  { _nCtx :: Int
   , _nThreads :: CInt
-  , _nPredict :: CInt
-  , _nGpuLayers :: CInt
+  , _nPredict :: Int
+  , _nGpuLayers :: Int
   , _enableNumaOpts :: Bool
   , _prompt :: String
   , _modelPath :: String
@@ -112,7 +112,7 @@ data Context = Context
   , _llamaCtx :: L.Context
   , _model :: L.Model
   , _lastNTokens :: TVar [L.Token]
-  , _nPast :: TVar CInt
+  , _nPast :: TVar Int
   }
 
 makeFieldsNoPrefix ''Context
@@ -140,7 +140,7 @@ main = do
     \(params', cpp, ctx, model') -> do
 
       lastNTokens' <- liftIO . newTVarIO $
-        replicate (fromIntegral . _nCtx $ params') 0
+        replicate (_nCtx params') 0
       nPast' <- liftIO . newTVarIO $ 0
 
       runContextM (Context params' cpp ctx model' lastNTokens' nPast') runLLaMA
@@ -160,10 +160,11 @@ main = do
       liftIO . allocaArray 1 $ \(tmp :: Ptr L.Token) -> do
         bos <- L.tokenBos
         pokeArray tmp [bos]
-        _evalRes <- L.eval ctx tmp 1 0 (_nThreads params')
+        _evalRes <- L.eval ctx tmp 1 0 (_nThreads $ params')
         L.resetTimings ctx
 
       let
+        -- todo why is this constant here
         maxTokens = 1024
         tokenize s tks addBos =
           L.tokenize ctx s tks (fromIntegral maxTokens) (fromBool addBos)
@@ -189,7 +190,7 @@ main = do
       liftIO $ atomically $ do
         lastNTokens' <- readTVar lastNTokensTV
         nPast' <- readTVar nPastTV
-        writeTVar nPastTV $ nPast' + tokenizedCount
+        writeTVar nPastTV $ nPast' + fromIntegral tokenizedCount
         writeTVar lastNTokensTV $
           drop (fromIntegral tokenizedCount) lastNTokens' <> tokenized
 
@@ -216,7 +217,7 @@ main = do
       id' <- liftIO $ sample' params' ctx nVocab lastNTokensTV
 
       void . liftIO . withArray [id'] $ \newTokenArrPtr ->
-        L.eval ctx newTokenArrPtr 1 nPast' (_nThreads params')
+        L.eval ctx newTokenArrPtr 1 (fromIntegral nPast') (_nThreads $ params')
 
       liftIO . atomically $ do
         writeTVar nPastTV $
