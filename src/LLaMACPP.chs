@@ -2,7 +2,7 @@
 module LLaMACPP where
 
 import Data.Word (Word32)
-import Foreign.C.Types (CChar, CDouble, CFloat, CInt, CLong, CUChar, CULong)
+import Foreign.C.Types (CChar, CDouble, CFloat, CInt, CLong, CSize, CUChar, CULong)
 import Foreign.Marshal.Utils (fromBool, toBool)
 import Foreign.Ptr (FunPtr, Ptr, castPtr)
 import Foreign.Storable (Storable, alignment, peek, poke, sizeOf)
@@ -84,8 +84,7 @@ instance Storable TokenData where
 --
 data TokenDataArray = TokenDataArray
   { _data :: Ptr TokenData
-  -- should I try to convert this to CSize?
-  , _size :: CULong
+  , _size :: CSize
   , _sorted :: Bool
   }
   deriving (Eq, Show)
@@ -97,11 +96,11 @@ instance Storable TokenDataArray where
   alignment _ = {# alignof token_data_array #}
   peek p = TokenDataArray
     <$> {# get token_data_array->data #} p
-    <*> {# get token_data_array->size #} p
+    <*> (fromIntegral <$> {# get token_data_array->size #} p)
     <*> {# get token_data_array->sorted #} p
   poke p (TokenDataArray _data _size _sorted) = do
     {# set token_data_array->data #} p _data
-    {# set token_data_array->size #} p _size
+    {# set token_data_array->size #} p $ fromIntegral _size
     {# set token_data_array->sorted #} p _sorted
 
 
