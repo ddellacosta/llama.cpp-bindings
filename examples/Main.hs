@@ -1,13 +1,9 @@
-{-# LANGUAGE TemplateHaskell #-}
-
 module Main where
 
 import Prelude hiding (takeWhile)
 
-import Control.Lens (view)
-import Control.Lens.TH (makeFieldsNoPrefix)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Reader (MonadReader, ReaderT, runReaderT)
+import Control.Monad.Reader (MonadReader, ReaderT, runReaderT, asks)
 import Control.Applicative ((<**>))
 import Control.Exception (bracket)
 import Data.Functor ((<&>), void)
@@ -41,7 +37,7 @@ import Options.Applicative
   , switch
   , value
   )
-import Pipes (Producer, (>->), for, runEffect, yield)
+import Pipes (Producer, (>->), for, lift, runEffect, yield)
 import Pipes.Prelude (takeWhile)
 
 data Params = Params
@@ -115,8 +111,6 @@ data Context = Context
   , _nPast :: TVar Int
   }
 
-makeFieldsNoPrefix ''Context
-
 newtype ContextM a = ContextM (ReaderT Context IO a)
   deriving (Functor, Applicative, Monad, MonadIO, MonadReader Context)
 
@@ -151,8 +145,8 @@ main = do
       liftIO . putStrLn $ "\nSystem Info:"
       liftIO $ putStrLn =<< peekCString =<< L.printSystemInfo
 
-      params' <- view params
-      ctx <- view llamaCtx
+      params' <- asks _params
+      ctx <- asks _llamaCtx
 
       -- tokenizing & eval
 
@@ -184,8 +178,8 @@ main = do
           peekArray (fromIntegral tokenizedCount') tokensPtr
 
       -- update lastNTokens with the tokenized count
-      lastNTokensTV <- view lastNTokens
-      nPastTV <- view nPast
+      lastNTokensTV <- asks _lastNTokens
+      nPastTV <- asks _nPast
 
       liftIO $ atomically $ do
         lastNTokens' <- readTVar lastNTokensTV
@@ -200,16 +194,17 @@ main = do
 
       -- I feel like this is not the right way to do this?
       runEffect $
-        for (sample >-> takeWhile (/= eos)) $ const (pure ())
+        for (sample >-> takeWhile (/= eos)) $ \id' ->
+          lift . liftIO $ putStr =<< peekCString =<< L.tokenToStr ctx id'
 
 
     sample :: Producer L.Token ContextM ()
     sample = do
-      params' <- view params
-      ctx <- view llamaCtx
-      nPastTV <- view nPast
+      params' <- asks _params
+      ctx <- asks _llamaCtx
+      nPastTV <- asks _nPast
       nPast' <- liftIO . readTVarIO $ nPastTV
-      lastNTokensTV <- view lastNTokens
+      lastNTokensTV <- asks _lastNTokens
       lastNTokens' <- liftIO . readTVarIO $ lastNTokensTV
 
       nVocab <- fromIntegral <$> (liftIO . L.nVocab $ ctx)
@@ -226,7 +221,7 @@ main = do
           else nPast' + 1
         writeTVar lastNTokensTV $ drop 1 lastNTokens' <> [id']
 
-      liftIO $ putStr =<< peekCString =<< L.tokenToStr ctx id'
+      -- liftIO $ putStr =<< peekCString =<< L.tokenToStr ctx id'
 
       yield id' *> sample
 
