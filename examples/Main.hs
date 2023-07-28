@@ -2,13 +2,12 @@ module Main where
 
 import Prelude hiding (takeWhile)
 
-import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Reader (MonadReader, ReaderT, runReaderT, asks)
 import Control.Applicative ((<**>))
 import Control.Exception (bracket)
+import Control.Monad.IO.Class (MonadIO, liftIO)
+import Control.Monad.Reader (MonadReader, ReaderT, runReaderT, asks)
 import Data.Functor ((<&>), void)
 import qualified Data.Vector.Storable as V
-import qualified LLaMACPP as L
 import Foreign.C.String (peekCString, withCString)
 import Foreign.C.Types (CFloat, CInt)
 import Foreign.ForeignPtr (newForeignPtr_)
@@ -18,6 +17,7 @@ import Foreign.Marshal.Utils (fromBool)
 import Foreign.Ptr (Ptr)
 import Foreign.Storable (Storable(peek, poke))
 import GHC.Conc (TVar, atomically, newTVarIO, readTVar, readTVarIO, writeTVar)
+import qualified LLaMACPP as L
 import Options.Applicative
   ( ParseError(..)
   , Parser
