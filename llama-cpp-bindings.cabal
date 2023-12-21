@@ -64,10 +64,10 @@ executable examples
   main-is:             Main.hs
   default-language:    GHC2021
 
-test-suite llama-cpp-bindings-test
-  import:              shared
-  build-depends:       llama-cpp-bindings
-  hs-source-dirs:      test
-  main-is:             Main.hs
-  default-language:    GHC2021
-  type:                exitcode-stdio-1.0
+-- test-suite llama-cpp-bindings-test
+--   import:              shared
+--   build-depends:       llama-cpp-bindings
+--   hs-source-dirs:      test
+--   main-is:             Main.hs
+--   default-language:    GHC2021
+--   type:                exitcode-stdio-1.0

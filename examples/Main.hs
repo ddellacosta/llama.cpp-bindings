@@ -8,7 +8,7 @@ import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Reader (MonadReader, ReaderT, runReaderT, asks)
 import Data.Functor ((<&>), void)
 import qualified Data.Vector.Storable as V
-import Foreign.C.String (peekCString, withCString)
+import Foreign.C.String (peekCString, withCString, withCStringLen)
 import Foreign.C.Types (CFloat, CInt)
 import Foreign.ForeignPtr (newForeignPtr_)
 import Foreign.Marshal.Alloc (alloca, free, malloc)
@@ -147,24 +147,25 @@ main = do
 
       params' <- asks _params
       ctx <- asks _llamaCtx
+      model <- asks _model
 
       -- tokenizing & eval
 
       -- "do one empty run to warm up the model"
       liftIO . allocaArray 1 $ \(tmp :: Ptr L.Token) -> do
-        bos <- L.tokenBos
+        bos <- L.tokenBos model
         pokeArray tmp [bos]
-        _evalRes <- L.eval ctx tmp 1 0 (_nThreads $ params')
+        _evalRes <- L.eval ctx tmp 1 0 --(_nThreads $ params')
         L.resetTimings ctx
 
       let
         -- todo why is this constant here
         maxTokens = 1024
-        tokenize s tks addBos =
-          L.tokenize ctx s tks (fromIntegral maxTokens) (fromBool addBos)
+        tokenize s l tks addBos =
+          L.tokenize model s (fromIntegral l) tks (fromIntegral maxTokens) (fromBool addBos) (fromBool False)
 
       (tokenized, tokenizedCount) <- liftIO . allocaArray maxTokens $ \tokensPtr -> do
-        tokenizedCount' <- withCString (_prompt params') $ \ts -> tokenize ts tokensPtr True
+        tokenizedCount' <- withCStringLen (_prompt params') $ \(ts, l) -> tokenize ts l tokensPtr True
 
         putStrLn "\nPrompt"
         putStrLn $ _prompt params' <> "\n\n"
@@ -172,7 +173,7 @@ main = do
         putStrLn $ "\nTokenized " <> show tokenizedCount'
 
         putStrLn "\nRunning first eval of entire prompt"
-        _evalRes <- L.eval ctx tokensPtr tokenizedCount' 0 (_nThreads params')
+        _evalRes <- L.eval ctx tokensPtr tokenizedCount' 0 --(_nThreads params')
 
         (, tokenizedCount') <$>
           peekArray (fromIntegral tokenizedCount') tokensPtr
@@ -190,29 +191,30 @@ main = do
 
       liftIO . putStrLn $ "\nsampling"
 
-      eos <- liftIO L.tokenEos
+      eos <- liftIO $ L.tokenEos model
 
       -- I feel like this is not the right way to do this?
       runEffect $
         for (sample >-> takeWhile (/= eos)) $ \id' ->
-          lift . liftIO $ putStr =<< peekCString =<< L.tokenToStr ctx id'
+          lift . liftIO $ putStr =<< L.tokenToPiece model id'
 
 
     sample :: Producer L.Token ContextM ()
     sample = do
       params' <- asks _params
       ctx <- asks _llamaCtx
+      model <- asks _model
       nPastTV <- asks _nPast
       nPast' <- liftIO . readTVarIO $ nPastTV
       lastNTokensTV <- asks _lastNTokens
       lastNTokens' <- liftIO . readTVarIO $ lastNTokensTV
 
-      nVocab <- fromIntegral <$> (liftIO . L.nVocab $ ctx)
+      nVocab <- fromIntegral <$> (liftIO . L.nVocab $ model)
 
-      id' <- liftIO $ sample' params' ctx nVocab lastNTokensTV
+      id' <- liftIO $ sample' model params' ctx nVocab lastNTokensTV
 
       void . liftIO . withArray [id'] $ \newTokenArrPtr ->
-        L.eval ctx newTokenArrPtr 1 (fromIntegral nPast') (_nThreads $ params')
+        L.eval ctx newTokenArrPtr 1 (fromIntegral nPast') -- (_nThreads $ params')
 
       liftIO . atomically $ do
         writeTVar nPastTV $
@@ -226,8 +228,8 @@ main = do
       yield id' *> sample
 
 
-    sample' :: Params -> L.Context -> Int -> TVar [L.Token] -> IO L.Token
-    sample' params' ctx nVocab lastNTokensTV = do
+    sample' :: L.Model -> Params -> L.Context -> Int -> TVar [L.Token] -> IO L.Token
+    sample' model params' ctx nVocab lastNTokensTV = do
       alloca $ \candidatesPPtr ->
         allocaArray nVocab $ \logitsCopyPtr -> do
 
@@ -262,23 +264,23 @@ main = do
               lastNTokensLen = fromIntegral . length $ lastNTokens'
 
             -- float nl_logit = logits[llama_token_nl()];
-            _nlLogit <- V.unsafeIndex logitsCopy . fromIntegral <$> L.tokenNl
+            _nlLogit <- V.unsafeIndex logitsCopy . fromIntegral <$> (L.tokenNl model)
 
             --
             -- lastNTokensPtr should be a pointer just to the last
             -- set of tokens at the end of lastNTokens matching the
             -- count of lastNRepeat, right now it's the entire thing
             --
-            L.sampleRepetitionPenalty
-              ctx candidatesPPtr lastNTokensPtr lastNTokensLen (_repeatPenalty params')
+            L.sampleRepetitionPenalties
+              ctx candidatesPPtr lastNTokensPtr lastNTokensLen (_repeatPenalty params') (1.0) (1.0)
 
-            L.sampleFrequencyAndPresencePenalties
-              ctx
-              candidatesPPtr
-              lastNTokensPtr
-              lastNTokensLen
-              (_alphaFrequency params')
-              (_alphaPresence params')
+            --L.sampleFrequencyAndPresencePenalties
+            --  ctx
+            --  candidatesPPtr
+            --  lastNTokensPtr
+            --  lastNTokensLen
+            --  (_alphaFrequency params')
+            --  (_alphaPresence params')
 
             -- todo
             -- if (!penalize_nl) {
@@ -316,21 +318,23 @@ main = do
       -- putStrLn "\ndefault model quantize params"
 
       cpp <- malloc
+      mpp <- malloc
       putStrLn "\ninit context params"
       L.contextDefaultParams cpp
-      ctxParams' <- peek cpp
+      L.modelDefaultParams mpp
+      --ctxParams' <- peek cpp
 
-      let
-        ctxParams = ctxParams'
-          { L._nCtx = _nCtx params'
-          , L._nGpuLayers = _nGpuLayers params'
-          }
+      --let
+      --  ctxParams = ctxParams'
+      --    -- { L._nCtx = _nCtx params'
+      --    -- , L._nGpuLayers = _nGpuLayers params'
+      --    -- }
 
-      poke cpp ctxParams
+      --poke cpp ctxParams
 
       putStrLn "\nloading model"
 
-      model' <- withCString (_modelPath params') $ flip L.loadModelFromFile cpp
+      model' <- withCString (_modelPath params') $ flip L.loadModelFromFile mpp
 
       putStrLn "\nloading context"
 
