@@ -329,9 +329,9 @@ main = do
 
       let
         ctxParams = ctxParams'
-          { L._nCtx = 2048
-          , L._nBatch = 2048
-          , L._seed = 1234
+          { L._seed = 1234
+          --, L._nCtx = 2048
+          --, L._nBatch = 2048
           --, L._nThreads = 2
           --, L._nThreadsBatch = 2
           }

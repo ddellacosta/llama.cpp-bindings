@@ -1,6 +1,7 @@
 
 module LLaMACPP where
 
+import Data.Either (fromRight)
 import Control.Exception (assert)
 import Data.Word (Word32)
 import Foreign
@@ -668,15 +669,26 @@ getEmbeddings = {# call llama_get_embeddings #}
 
 
 tokenToPiece :: Model -> Token -> IO String
-tokenToPiece m t = do
-    allocaBytes 8 $ \buf -> do
-        nTokens <- fromIntegral <$> tokenToPiece' m t buf 8
-        if nTokens >= 0
-            then peekCStringLen (buf, nTokens)
-            else allocaBytes nTokens $ \buf' -> do
-                nTokens' <- fromIntegral <$> tokenToPiece' m t buf' (fromIntegral (negate nTokens))
-                assert (nTokens==nTokens') (pure ())
-                peekCStringLen (buf', fromIntegral nTokens)
+tokenToPiece m t =
+    let alloc' size = allocaBytes size $ \buf -> do
+            nTokens <- fromIntegral <$> tokenToPiece' m t buf (fromIntegral size)
+            if nTokens >= 0
+                then Right <$> peekCStringLen (buf, nTokens)
+                else pure $ Left (negate nTokens)
+     in do
+        r <- alloc' 8
+        either (\nTokens -> do
+            r' <- alloc' nTokens
+            pure $ fromRight "??" r'
+            ) (pure . id) r
+
+
+        
+
+            --else allocaBytes nTokens $ \buf' -> do
+            --    nTokens' <- fromIntegral <$> tokenToPiece' m t buf' (fromIntegral (negate nTokens))
+            --    assert (nTokens==nTokens') (pure ())
+            --    peekCStringLen (buf', fromIntegral nTokens)
 
 --
 -- // Token Id -> String. Uses the vocabulary in the provided context
