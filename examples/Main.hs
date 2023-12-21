@@ -1,7 +1,8 @@
 module Main where
 
 import Prelude hiding (takeWhile)
-
+import System.Exit
+import System.IO
 import Control.Applicative ((<**>))
 import Control.Exception (bracket)
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -196,7 +197,9 @@ main = do
       -- I feel like this is not the right way to do this?
       runEffect $
         for (sample >-> takeWhile (/= eos)) $ \id' ->
-          lift . liftIO $ putStr =<< L.tokenToPiece model id'
+          lift . liftIO $ do
+              putStr =<< L.tokenToPiece model id'
+              hFlush stdout
 
 
     sample :: Producer L.Token ContextM ()
@@ -322,15 +325,18 @@ main = do
       putStrLn "\ninit context params"
       L.contextDefaultParams cpp
       L.modelDefaultParams mpp
-      --ctxParams' <- peek cpp
+      ctxParams' <- peek cpp
 
-      --let
-      --  ctxParams = ctxParams'
-      --    -- { L._nCtx = _nCtx params'
-      --    -- , L._nGpuLayers = _nGpuLayers params'
-      --    -- }
+      let
+        ctxParams = ctxParams'
+          { L._nCtx = 2048
+          , L._nBatch = 2048
+          , L._seed = 1234
+          --, L._nThreads = 2
+          --, L._nThreadsBatch = 2
+          }
 
-      --poke cpp ctxParams
+      poke cpp ctxParams
 
       putStrLn "\nloading model"
 

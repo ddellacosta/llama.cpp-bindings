@@ -130,6 +130,7 @@ data ModelParams = ModelParams
     , _mainGpu :: Word32
     }
 -- TODO, implement storable
+{# pointer *model_params as ModelParamsPtr -> ModelParams #}
 
 instance Storable ModelParams where
   sizeOf _ = {# sizeof model_params #}
@@ -204,10 +205,9 @@ data ContextParams = ContextParams
   --, _useMlock :: Bool
   --, _embedding :: Bool
   }
-  -- deriving (Eq, Show) -- needs ProgressCallback instance
+   deriving (Eq, Show) -- needs ProgressCallback instance
 
 {# pointer *context_params as ContextParamsPtr -> ContextParams #}
-{# pointer *model_params as ModelParamsPtr -> ModelParams #}
 
 instance Storable ContextParams where
   sizeOf _ = {# sizeof context_params #}
@@ -428,7 +428,7 @@ freeModel = {# call free_model #}
 
 newContextWithModel :: Model -> ContextParamsPtr -> IO (Context)
 newContextWithModel model ctxParamsPtr =
-  {# call new_context_with_model #} model (castPtr ctxParamsPtr)
+  {# call wrapper_new_context_with_model #} model (castPtr ctxParamsPtr)
 
 
 --

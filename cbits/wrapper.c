@@ -7,6 +7,13 @@ struct llama_model * wrapper_load_model_from_file
   return llama_load_model_from_file(path_model, *params);
 }
 
+struct llama_context * wrapper_new_context_with_model(
+            struct llama_model * model,
+            struct llama_context_params * params
+        ) {
+    return llama_new_context_with_model(model, *params);
+}
+
 void wrapper_context_default_params(struct llama_context_params * default_params) {
   *default_params = llama_context_default_params();
 }
