@@ -1,11 +1,8 @@
 
 module LLaMACPP where
 
-import Data.Either (fromRight)
 import Control.Exception (assert)
-import Data.Word (Word32)
-import Foreign
-import Foreign.C.String (peekCStringLen)
+import Data.Word (Word8, Word32)
 import Foreign.C.Types (CChar, CDouble, CFloat, CInt, CLong, CSize, CUChar, CULong)
 import Foreign.Marshal.Utils (fromBool, toBool)
 import Foreign.Ptr (FunPtr, Ptr, castPtr)
@@ -619,46 +616,32 @@ getEmbeddings :: Context -> IO (Ptr CFloat)
 getEmbeddings = {# call llama_get_embeddings #}
 
 
-tokenToPiece :: Model -> Token -> IO String
-tokenToPiece m t =
-    let alloc' size = allocaBytes size $ \buf -> do
-            nTokens <- fromIntegral <$> tokenToPiece' m t buf (fromIntegral size)
-            if nTokens >= 0
-                then Right <$> peekCStringLen (buf, nTokens)
-                else pure $ Left (negate nTokens)
-     in do
-        r <- alloc' 8
-        either (\nTokens -> do
-            r' <- alloc' nTokens
-            pure $ fromRight "??" r'
-            ) (pure . id) r
-
 --
 -- // Token Id -> String. Uses the vocabulary in the provided context
 -- LLAMA_API const char * llama_token_to_str(const struct llama_context * ctx, llama_token token);
 --
-tokenToPiece' :: Model -> Token -> Ptr CChar -> CInt -> IO CInt
-tokenToPiece' = {# call token_to_piece #}
+tokenToPiece :: Model -> Token -> Ptr CChar -> CInt -> IO CInt
+tokenToPiece = {# call token_to_piece #}
 
 
 -- // Special tokens
 
 --
--- LLAMA_API llama_token llama_token_bos();  // beginning-of-sentence
+-- LLAMA_API llama_token llama_token_bos(const struct llama_model * model);  // beginning-of-sentence
 --
 tokenBos :: Model -> IO Token
 tokenBos = {# call token_bos #}
 
 
 --
--- LLAMA_API llama_token llama_token_eos();  // end-of-sentence
+-- LLAMA_API llama_token llama_token_eos(const struct llama_model * model);  // end-of-sentence
 --
 tokenEos :: Model -> IO Token
 tokenEos = {# call token_eos #}
 
 
 --
--- LLAMA_API llama_token llama_token_nl();   // next-line
+-- LLAMA_API llama_token llama_token_nl(const struct llama_model * model);   // next-line
 --
 tokenNl :: Model -> IO Token
 tokenNl = {# call token_nl #}

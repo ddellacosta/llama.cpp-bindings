@@ -1,15 +1,15 @@
 module Main where
 
 import Prelude hiding (takeWhile)
-import System.Exit
-import System.IO
 import Control.Applicative ((<**>))
 import Control.Exception (bracket)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Reader (MonadReader, ReaderT, runReaderT, asks)
+import Data.Either (fromRight)
 import Data.Functor ((<&>), void)
 import qualified Data.Vector.Storable as V
-import Foreign.C.String (peekCString, withCString, withCStringLen)
+import Foreign (allocaBytes)
+import Foreign.C.String (peekCString, peekCStringLen, withCString, withCStringLen)
 import Foreign.C.Types (CFloat, CInt)
 import Foreign.ForeignPtr (newForeignPtr_)
 import Foreign.Marshal.Alloc (alloca, free, malloc)
@@ -40,6 +40,7 @@ import Options.Applicative
   )
 import Pipes (Producer, (>->), for, lift, runEffect, yield)
 import Pipes.Prelude (takeWhile)
+import System.IO (hFlush, stdout)
 
 data Params = Params
   { _nCtx :: Int
@@ -119,6 +120,24 @@ runContextM :: Context -> ContextM () -> IO ()
 runContextM ctx (ContextM ctxM) = runReaderT ctxM ctx
 
 
+tokenToString :: L.Model -> L.Token -> IO String
+tokenToString m t =
+  let
+    -- Returns (Right tokenString) if successful, otherwise 
+    -- (Left len), where len is correct token size to allocate
+    tokenBufToStr size = allocaBytes size $ \buf -> do
+          nTokens <- fromIntegral <$> L.tokenToPiece m t buf (fromIntegral size)
+          if nTokens >= 0
+              then Right <$> peekCStringLen (buf, nTokens)
+              -- tokenToPiece will return the token size, negated,
+              -- iff the size we allocate is too small.
+              else pure $ Left (negate nTokens)
+   in do
+      r <- tokenBufToStr 8
+      either (\nTokens -> do
+          r' <- tokenBufToStr nTokens
+          pure $ fromRight (error "token allocation failed") r'
+          ) (pure . id) r
 --
 
 -- mimicking call here, somewhat: https://huggingface.co/TheBloke/open-llama-7B-v2-open-instruct-GGML#how-to-run-in-llamacpp 
@@ -156,7 +175,7 @@ main = do
       liftIO . allocaArray 1 $ \(tmp :: Ptr L.Token) -> do
         bos <- L.tokenBos model
         pokeArray tmp [bos]
-        _evalRes <- L.eval ctx tmp 1 0 --(_nThreads $ params')
+        _evalRes <- L.eval ctx tmp 1 0
         L.resetTimings ctx
 
       let
@@ -174,7 +193,7 @@ main = do
         putStrLn $ "\nTokenized " <> show tokenizedCount'
 
         putStrLn "\nRunning first eval of entire prompt"
-        _evalRes <- L.eval ctx tokensPtr tokenizedCount' 0 --(_nThreads params')
+        _evalRes <- L.eval ctx tokensPtr tokenizedCount' 0
 
         (, tokenizedCount') <$>
           peekArray (fromIntegral tokenizedCount') tokensPtr
@@ -198,7 +217,7 @@ main = do
       runEffect $
         for (sample >-> takeWhile (/= eos)) $ \id' ->
           lift . liftIO $ do
-              putStr =<< L.tokenToPiece model id'
+              putStr =<< tokenToString model id'
               hFlush stdout
 
 
@@ -217,7 +236,7 @@ main = do
       id' <- liftIO $ sample' model params' ctx nVocab lastNTokensTV
 
       void . liftIO . withArray [id'] $ \newTokenArrPtr ->
-        L.eval ctx newTokenArrPtr 1 (fromIntegral nPast') -- (_nThreads $ params')
+        L.eval ctx newTokenArrPtr 1 (fromIntegral nPast')
 
       liftIO . atomically $ do
         writeTVar nPastTV $
@@ -225,8 +244,6 @@ main = do
           then _nCtx params'
           else nPast' + 1
         writeTVar lastNTokensTV $ drop 1 lastNTokens' <> [id']
-
-      -- liftIO $ putStr =<< peekCString =<< L.tokenToStr ctx id'
 
       yield id' *> sample
 
