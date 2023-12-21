@@ -294,14 +294,6 @@ main = do
             L.sampleRepetitionPenalties
               ctx candidatesPPtr lastNTokensPtr lastNTokensLen (_repeatPenalty params') (1.0) (1.0)
 
-            --L.sampleFrequencyAndPresencePenalties
-            --  ctx
-            --  candidatesPPtr
-            --  lastNTokensPtr
-            --  lastNTokensLen
-            --  (_alphaFrequency params')
-            --  (_alphaPresence params')
-
             -- todo
             -- if (!penalize_nl) {
             --     logits[llama_token_nl()] = nl_logit;
