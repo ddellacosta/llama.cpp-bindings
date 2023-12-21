@@ -107,6 +107,13 @@ instance Storable TokenDataArray where
     {# set token_data_array->size #} p $ fromIntegral _size
     {# set token_data_array->sorted #} p _sorted
 
+--
+-- typedef void (*llama_progress_callback)(float progress, void *ctx);
+--
+type ProgressCallback = CFloat -> Ptr () -> IO ()
+
+{# pointer progress_callback as ProgressCallbackPtr -> ProgressCallback #}
+
 --     struct llama_model_params {
 --         int32_t n_gpu_layers; // number of layers to store in VRAM
 --         int32_t main_gpu;     // the GPU that is used for scratch and small tensors
@@ -129,8 +136,16 @@ instance Storable TokenDataArray where
 data ModelParams = ModelParams
     { _nGpuLayers :: Word32
     , _mainGpu :: Word32
+    , _tensorSplit :: Ptr CFloat
+    , _progressCallback :: FunPtr ProgressCallback
+    , _progressCallbackUserData :: Ptr ()
+    , _kvOverrides :: Ptr ()
+    , _vocabOnly :: Bool
+    , _useMmap :: Bool
+    , _useMlock :: Bool
     }
--- TODO, implement storable
+    deriving (Show, Eq)
+
 {# pointer *model_params as ModelParamsPtr -> ModelParams #}
 
 instance Storable ModelParams where
@@ -139,16 +154,16 @@ instance Storable ModelParams where
   peek p = ModelParams
     <$> (fromIntegral <$> {# get model_params->n_gpu_layers #} p)
     <*> (fromIntegral <$> {# get model_params->main_gpu #} p)
+    <*> ({# get model_params->tensor_split #} p)
+    <*> ({# get model_params->progress_callback #} p)
+    <*> ({# get model_params->progress_callback_user_data #} p)
+    <*> ({# get model_params->kv_overrides #} p)
+    <*> ({# get model_params->vocab_only #} p)
+    <*> ({# get model_params->use_mmap #} p)
+    <*> ({# get model_params->use_mlock #} p)
   poke p mps = do 
     {# set model_params->n_gpu_layers #} p $ fromIntegral $ _nGpuLayers mps
     {# set model_params->main_gpu #} p $ fromIntegral $ _mainGpu mps
-
---
--- typedef void (*llama_progress_callback)(float progress, void *ctx);
---
-type ProgressCallback = CFloat -> Ptr () -> IO ()
-
-{# pointer progress_callback as ProgressCallbackPtr -> ProgressCallback #}
 
 --
 --struct llama_context_params {
@@ -193,20 +208,8 @@ data ContextParams = ContextParams
   , _logitsAll :: Bool
   , _embedding :: Bool
   , _offloadKqv :: Bool
-  --, _nGpuLayers :: Int
-  --, _mainGpu :: Int
-  --, _tensorSplit :: Ptr CFloat
-  --, _progressCallback :: FunPtr ProgressCallback
-  --, _progressCallbackUserData :: Ptr ()
-  --, _lowVRAM :: Bool
-  --, _f16KV :: Bool
-  --, _logitsAll :: Bool
-  --, _vocabOnly :: Bool
-  --, _useMmap :: Bool
-  --, _useMlock :: Bool
-  --, _embedding :: Bool
   }
-   deriving (Eq, Show) -- needs ProgressCallback instance
+   deriving (Eq, Show)
 
 {# pointer *context_params as ContextParamsPtr -> ContextParams #}
 
@@ -681,14 +684,6 @@ tokenToPiece m t =
             r' <- alloc' nTokens
             pure $ fromRight "??" r'
             ) (pure . id) r
-
-
-        
-
-            --else allocaBytes nTokens $ \buf' -> do
-            --    nTokens' <- fromIntegral <$> tokenToPiece' m t buf' (fromIntegral (negate nTokens))
-            --    assert (nTokens==nTokens') (pure ())
-            --    peekCStringLen (buf', fromIntegral nTokens)
 
 --
 -- // Token Id -> String. Uses the vocabulary in the provided context
