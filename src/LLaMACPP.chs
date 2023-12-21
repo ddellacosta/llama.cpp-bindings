@@ -167,26 +167,31 @@ instance Storable ModelParams where
 
 --
 --struct llama_context_params {
---     uint32_t seed;                         // RNG seed, -1 for random
---     int32_t  n_ctx;                        // text context
---     int32_t  n_batch;                      // prompt processing batch size
---     int32_t  n_gpu_layers;                 // number of layers to store in VRAM
---     int32_t  main_gpu;                     // the GPU that is used for scratch and small tensors
---     float tensor_split[LLAMA_MAX_DEVICES]; // how to split layers across multiple GPUs
---     // called with a progress value between 0 and 1, pass NULL to disable
---     llama_progress_callback progress_callback;
---     // context pointer passed to the progress callback
---     void * progress_callback_user_data;
---
---     // Keep the booleans together to avoid misalignment during copy-by-value.
---     bool low_vram;   // if true, reduce VRAM usage at the cost of performance
---     bool f16_kv;     // use fp16 for KV cache
---     bool logits_all; // the llama_eval() call computes all logits, not just the last one
---     bool vocab_only; // only load the vocabulary, no weights
---     bool use_mmap;   // use mmap if possible
---     bool use_mlock;  // force system to keep model in RAM
---     bool embedding;  // embedding mode only
--- };
+--         uint32_t seed;              // RNG seed, -1 for random
+--         uint32_t n_ctx;             // text context, 0 = from model
+--         uint32_t n_batch;           // prompt processing maximum batch size
+--         uint32_t n_threads;         // number of threads to use for generation
+--         uint32_t n_threads_batch;   // number of threads to use for batch processing
+--         int8_t   rope_scaling_type; // RoPE scaling type, from `enum llama_rope_scaling_type`
+-- 
+--         // ref: https://github.com/ggerganov/llama.cpp/pull/2054
+--         float    rope_freq_base;   // RoPE base frequency, 0 = from model
+--         float    rope_freq_scale;  // RoPE frequency scaling factor, 0 = from model
+--         float    yarn_ext_factor;  // YaRN extrapolation mix factor, negative = from model
+--         float    yarn_attn_factor; // YaRN magnitude scaling factor
+--         float    yarn_beta_fast;   // YaRN low correction dim
+--         float    yarn_beta_slow;   // YaRN high correction dim
+--         uint32_t yarn_orig_ctx;    // YaRN original context size
+-- 
+--         enum ggml_type type_k; // data type for K cache
+--         enum ggml_type type_v; // data type for V cache
+-- 
+--         // Keep the booleans together to avoid misalignment during copy-by-value.
+--         bool mul_mat_q;   // if true, use experimental mul_mat_q kernels (DEPRECATED - always true)
+--         bool logits_all;  // the llama_eval() call computes all logits, not just the last one (DEPRECATED - set llama_batch.logits instead)
+--         bool embedding;   // embedding mode only
+--         bool offload_kqv; // whether to offload the KQV ops (including the KV cache) to GPU
+--     };
 --
 data ContextParams = ContextParams
   { _seed :: Word32
@@ -553,18 +558,6 @@ eval = {# call eval #}
 evalEmbd :: Context -> Ptr CFloat -> CInt -> CInt -> IO CInt
 evalEmbd = {# call eval_embd #}
 
-
---
--- // Export a static computation graph for context of 511 and batch size of 1
--- // NOTE: since this functionality is mostly for debugging and demonstration purposes, we hardcode these
--- //       parameters here to keep things simple
--- // IMPORTANT: do not use for anything else other than debugging and testing!
--- LLAMA_API int llama_eval_export(struct llama_context * ctx, const char * fname);
---
--- evalExport :: Context -> Ptr CChar -> IO CInt
--- evalExport = {# call eval_export #}
-
-
 --
 -- // Convert the provided text into tokens.
 -- // The tokens pointer must be large enough to hold the resulting tokens.
@@ -588,16 +581,6 @@ tokenize :: Model
                 -> IO CInt
 tokenize = {# call tokenize #}
 
--- LLAMA_API int llama_tokenize_with_model(
---     const struct llama_model * model,
---                   const char * text,
---                  llama_token * tokens,
---                          int   n_max_tokens,
---                         bool   add_bos);
--- tokenizeWithModel :: Model -> Ptr CChar -> Ptr Token -> CInt -> CUChar -> IO CInt
--- tokenizeWithModel = {# call tokenize_with_model #}
-
-
 --
 -- LLAMA_API int llama_n_vocab(const struct llama_context * ctx);
 --
@@ -616,40 +599,6 @@ nCtx = {# call n_ctx #}
 nEmbd :: Model -> IO CInt
 nEmbd = {# call n_embd #}
 
-
---
--- LLAMA_API int llama_n_vocab_from_model(const struct llama_model * model);
---
--- nVocabFromModel :: Model -> IO CInt
--- nVocabFromModel = {# call n_vocab_from_model #}
-
---
--- LLAMA_API int llama_n_ctx_from_model  (const struct llama_model * model);
---
--- nCtxFromModel :: Model -> IO CInt
--- nCtxFromModel = {# call n_ctx_from_model #}
-
-
---
--- LLAMA_API int llama_n_embd_from_model (const struct llama_model * model);
---
--- nEmbdFromModel :: Model -> IO CInt
--- nEmbdFromModel = {# call n_embd_from_model #}
-
-
---
--- // Get the vocabulary as output parameters.
--- // Returns number of results.
--- LLAMA_API int llama_get_vocab(
---         const struct llama_context * ctx,
---                       const char * * strings,
---                              float * scores,
---                                int   capacity);
---
--- getVocab :: Context -> Ptr (Ptr CChar) -> Ptr CFloat -> CInt -> IO CInt
--- getVocab = {# call get_vocab #}
-
-
 --
 -- // Token logits obtained from the last call to llama_eval()
 -- // The logits for the last token are stored in the last row
@@ -660,7 +609,6 @@ nEmbd = {# call n_embd #}
 --
 getLogits :: Context -> IO (Ptr CFloat)
 getLogits = {# call llama_get_logits #}
-
 
 --
 -- // Get the embeddings for the input
@@ -691,13 +639,6 @@ tokenToPiece m t =
 --
 tokenToPiece' :: Model -> Token -> Ptr CChar -> CInt -> IO CInt
 tokenToPiece' = {# call token_to_piece #}
-
-
--- LLAMA_API const char * llama_token_to_str_with_model(
---           const struct llama_model * model,
---                        llama_token   token);
--- tokenToStrWithModel :: Model -> Token -> IO (Ptr CChar)
--- tokenToStrWithModel = {# call token_to_str_with_model #}
 
 
 -- // Special tokens
@@ -731,15 +672,6 @@ tokenNl = {# call token_nl #}
 --
 sampleRepetitionPenalties :: Context -> Ptr TokenDataArray -> Ptr Token -> CULong -> CFloat -> CFloat -> CFloat -> IO ()
 sampleRepetitionPenalties = {# call sample_repetition_penalties #}
-
-
---
--- /// @details Frequency and presence penalties described in OpenAI API https://platform.openai.com/docs/api-reference/parameter-details.
--- LLAMA_API void llama_sample_frequency_and_presence_penalties(struct llama_context * ctx, llama_token_data_array * candidates, const llama_token * last_tokens, size_t last_tokens_size, float alpha_frequency, float alpha_presence);
---
--- sampleFrequencyAndPresencePenalties
---   :: Context -> Ptr TokenDataArray -> Ptr Token -> CULong -> CFloat -> CFloat -> IO ()
--- sampleFrequencyAndPresencePenalties = {# call sample_frequency_and_presence_penalties #} 
 
 
 -- /// @details Apply classifier-free guidance to the logits as described in academic paper "Stay on topic with Classifier-Free Guidance" https://arxiv.org/abs/2306.17806
