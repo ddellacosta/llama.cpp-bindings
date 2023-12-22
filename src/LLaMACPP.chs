@@ -1,7 +1,8 @@
 
 module LLaMACPP where
 
-import Data.Word (Word32)
+import Control.Exception (assert)
+import Data.Word (Word8, Word32)
 import Foreign.C.Types (CChar, CDouble, CFloat, CInt, CLong, CSize, CUChar, CULong)
 import Foreign.Marshal.Utils (fromBool, toBool)
 import Foreign.Ptr (FunPtr, Ptr, castPtr)
@@ -103,7 +104,6 @@ instance Storable TokenDataArray where
     {# set token_data_array->size #} p $ fromIntegral _size
     {# set token_data_array->sorted #} p _sorted
 
-
 --
 -- typedef void (*llama_progress_callback)(float progress, void *ctx);
 --
@@ -111,47 +111,107 @@ type ProgressCallback = CFloat -> Ptr () -> IO ()
 
 {# pointer progress_callback as ProgressCallbackPtr -> ProgressCallback #}
 
+--     struct llama_model_params {
+--         int32_t n_gpu_layers; // number of layers to store in VRAM
+--         int32_t main_gpu;     // the GPU that is used for scratch and small tensors
+--         const float * tensor_split; // how to split layers across multiple GPUs (size: LLAMA_MAX_DEVICES)
+-- 
+--         // called with a progress value between 0 and 1, pass NULL to disable
+--         llama_progress_callback progress_callback;
+-- 
+--         // context pointer passed to the progress callback
+--         void * progress_callback_user_data;
+-- 
+--         // override key-value pairs of the model meta data
+--         const struct llama_model_kv_override * kv_overrides;
+-- 
+--         // Keep the booleans together to avoid misalignment during copy-by-value.
+--         bool vocab_only; // only load the vocabulary, no weights
+--         bool use_mmap;   // use mmap if possible
+--         bool use_mlock;  // force system to keep model in RAM
+--     };
+data ModelParams = ModelParams
+    { _nGpuLayers :: Int
+    , _mainGpu :: Word32
+    , _tensorSplit :: Ptr CFloat
+    , _progressCallback :: FunPtr ProgressCallback
+    , _progressCallbackUserData :: Ptr ()
+    , _kvOverrides :: Ptr ()
+    , _vocabOnly :: Bool
+    , _useMmap :: Bool
+    , _useMlock :: Bool
+    }
+    deriving (Show, Eq)
+
+{# pointer *model_params as ModelParamsPtr -> ModelParams #}
+
+instance Storable ModelParams where
+  sizeOf _ = {# sizeof model_params #}
+  alignment _ = {# alignof model_params #}
+  peek p = ModelParams
+    <$> (fromIntegral <$> {# get model_params->n_gpu_layers #} p)
+    <*> (fromIntegral <$> {# get model_params->main_gpu #} p)
+    <*> ({# get model_params->tensor_split #} p)
+    <*> ({# get model_params->progress_callback #} p)
+    <*> ({# get model_params->progress_callback_user_data #} p)
+    <*> ({# get model_params->kv_overrides #} p)
+    <*> ({# get model_params->vocab_only #} p)
+    <*> ({# get model_params->use_mmap #} p)
+    <*> ({# get model_params->use_mlock #} p)
+  poke p mps = do 
+    {# set model_params->n_gpu_layers #} p $ fromIntegral $ _nGpuLayers mps
+    {# set model_params->main_gpu #} p $ fromIntegral $ _mainGpu mps
+
 --
 --struct llama_context_params {
---     uint32_t seed;                         // RNG seed, -1 for random
---     int32_t  n_ctx;                        // text context
---     int32_t  n_batch;                      // prompt processing batch size
---     int32_t  n_gpu_layers;                 // number of layers to store in VRAM
---     int32_t  main_gpu;                     // the GPU that is used for scratch and small tensors
---     float tensor_split[LLAMA_MAX_DEVICES]; // how to split layers across multiple GPUs
---     // called with a progress value between 0 and 1, pass NULL to disable
---     llama_progress_callback progress_callback;
---     // context pointer passed to the progress callback
---     void * progress_callback_user_data;
---
---     // Keep the booleans together to avoid misalignment during copy-by-value.
---     bool low_vram;   // if true, reduce VRAM usage at the cost of performance
---     bool f16_kv;     // use fp16 for KV cache
---     bool logits_all; // the llama_eval() call computes all logits, not just the last one
---     bool vocab_only; // only load the vocabulary, no weights
---     bool use_mmap;   // use mmap if possible
---     bool use_mlock;  // force system to keep model in RAM
---     bool embedding;  // embedding mode only
--- };
+--         uint32_t seed;              // RNG seed, -1 for random
+--         uint32_t n_ctx;             // text context, 0 = from model
+--         uint32_t n_batch;           // prompt processing maximum batch size
+--         uint32_t n_threads;         // number of threads to use for generation
+--         uint32_t n_threads_batch;   // number of threads to use for batch processing
+--         int8_t   rope_scaling_type; // RoPE scaling type, from `enum llama_rope_scaling_type`
+-- 
+--         // ref: https://github.com/ggerganov/llama.cpp/pull/2054
+--         float    rope_freq_base;   // RoPE base frequency, 0 = from model
+--         float    rope_freq_scale;  // RoPE frequency scaling factor, 0 = from model
+--         float    yarn_ext_factor;  // YaRN extrapolation mix factor, negative = from model
+--         float    yarn_attn_factor; // YaRN magnitude scaling factor
+--         float    yarn_beta_fast;   // YaRN low correction dim
+--         float    yarn_beta_slow;   // YaRN high correction dim
+--         uint32_t yarn_orig_ctx;    // YaRN original context size
+-- 
+--         enum ggml_type type_k; // data type for K cache
+--         enum ggml_type type_v; // data type for V cache
+-- 
+--         // Keep the booleans together to avoid misalignment during copy-by-value.
+--         bool mul_mat_q;   // if true, use experimental mul_mat_q kernels (DEPRECATED - always true)
+--         bool logits_all;  // the llama_eval() call computes all logits, not just the last one (DEPRECATED - set llama_batch.logits instead)
+--         bool embedding;   // embedding mode only
+--         bool offload_kqv; // whether to offload the KQV ops (including the KV cache) to GPU
+--     };
 --
 data ContextParams = ContextParams
   { _seed :: Word32
   , _nCtx :: Int
   , _nBatch :: Int
-  , _nGpuLayers :: Int
-  , _mainGpu :: Int
-  , _tensorSplit :: Ptr CFloat
-  , _progressCallback :: FunPtr ProgressCallback
-  , _progressCallbackUserData :: Ptr ()
-  , _lowVRAM :: Bool
-  , _f16KV :: Bool
+  , _nThreads :: Int
+  , _nThreadsBatch :: Word32
+  , _ropeScalingType :: Word8
+  , _ropeFreqBase :: CFloat
+  , _ropeFreqScale :: CFloat
+  , _yarnExtFactor :: CFloat
+  , _yarnAttnFactor :: CFloat
+  , _yarnBetaFast :: CFloat
+  , _yarnBetaSlow :: CFloat
+  , _yarnOrigCtx :: Word32
+  , _typeK :: CInt
+  , _typeV :: CInt
+  , _mulMatQ :: Bool
   , _logitsAll :: Bool
-  , _vocabOnly :: Bool
-  , _useMmap :: Bool
-  , _useMlock :: Bool
   , _embedding :: Bool
+  , _offloadKqv :: Bool
   }
-  -- deriving (Eq, Show) -- needs ProgressCallback instance
+   deriving (Eq, Show)
 
 {# pointer *context_params as ContextParamsPtr -> ContextParams #}
 
@@ -162,34 +222,66 @@ instance Storable ContextParams where
     <$> (fromIntegral <$> {# get context_params->seed #} p)
     <*> (fromIntegral <$> {# get context_params->n_ctx #} p)
     <*> (fromIntegral <$> {# get context_params->n_batch #} p)
-    <*> (fromIntegral <$> {# get context_params->n_gpu_layers #} p)
-    <*> (fromIntegral <$> {# get context_params->main_gpu #} p)
-    <*> {# get context_params->tensor_split #} p
-    <*> {# get context_params->progress_callback #} p
-    <*> {# get context_params->progress_callback_user_data #} p
-    <*> {# get context_params->low_vram #} p
-    <*> {# get context_params->f16_kv #} p
-    <*> {# get context_params->logits_all #} p
-    <*> {# get context_params->vocab_only #} p
-    <*> {# get context_params->use_mmap #} p
-    <*> {# get context_params->use_mlock #} p
-    <*> {# get context_params->embedding #} p
+    <*> (fromIntegral <$> {# get context_params->n_threads  #} p)
+    <*> (fromIntegral <$> {# get context_params->n_threads_batch  #} p)
+    <*> (fromIntegral <$> {# get context_params->rope_scaling_type  #} p)
+    <*> {# get context_params->rope_freq_base  #} p
+    <*> {# get context_params->rope_freq_scale  #} p
+    <*> {# get context_params->yarn_ext_factor  #} p
+    <*> {# get context_params->yarn_attn_factor  #} p
+    <*> {# get context_params->yarn_beta_fast  #} p
+    <*> {# get context_params->yarn_beta_slow  #} p
+    <*> (fromIntegral <$> {# get context_params->yarn_orig_ctx  #} p)
+    <*> {# get context_params->type_k  #} p
+    <*> {# get context_params->type_k  #} p
+    <*> {# get context_params->mul_mat_q  #} p
+    <*> {# get context_params->logits_all  #} p
+    <*> {# get context_params->embedding  #} p
+    <*> {# get context_params->offload_kqv  #} p
+    -- <*> (fromIntegral <$> {# get context_params->n_gpu_layers #} p)
+    -- <*> (fromIntegral <$> {# get context_params->main_gpu #} p)
+    -- <*> {# get context_params->tensor_split #} p
+    -- <*> {# get context_params->progress_callback #} p
+    -- <*> {# get context_params->progress_callback_user_data #} p
+    -- <*> {# get context_params->low_vram #} p
+    -- <*> {# get context_params->f16_kv #} p
+    -- <*> {# get context_params->logits_all #} p
+    -- <*> {# get context_params->vocab_only #} p
+    -- <*> {# get context_params->use_mmap #} p
+    -- <*> {# get context_params->use_mlock #} p
+    -- <*> {# get context_params->embedding #} p
   poke p cps = do 
     {# set context_params->seed #} p $ fromIntegral $ _seed cps
     {# set context_params->n_ctx #} p $ fromIntegral $ _nCtx cps
     {# set context_params->n_batch #} p $ fromIntegral $ _nBatch cps
-    {# set context_params->n_gpu_layers #} p $ fromIntegral $ _nGpuLayers cps
-    {# set context_params->main_gpu #} p $ fromIntegral $ _mainGpu cps
-    {# set context_params->tensor_split #} p $ _tensorSplit cps
-    {# set context_params->progress_callback #} p $ _progressCallback cps
-    {# set context_params->progress_callback_user_data #} p $ _progressCallbackUserData cps
-    {# set context_params->low_vram #} p $ _lowVRAM cps
-    {# set context_params->f16_kv #} p $ _f16KV cps
-    {# set context_params->logits_all #} p $ _logitsAll cps
-    {# set context_params->vocab_only #} p $ _vocabOnly cps
-    {# set context_params->use_mmap #} p $ _useMmap cps
-    {# set context_params->use_mlock #} p $ _useMlock cps
-    {# set context_params->embedding #} p $ _embedding cps
+    {# set context_params-> n_threads  #} p $ fromIntegral $ _nThreads  cps
+    {# set context_params-> n_threads_batch  #} p $ fromIntegral $ _nThreadsBatch  cps
+    {# set context_params-> rope_scaling_type  #} p $ fromIntegral $ _ropeScalingType  cps
+    {# set context_params-> rope_freq_base  #} p $ _ropeFreqBase  cps
+    {# set context_params-> rope_freq_scale  #} p $ _ropeFreqScale  cps
+    {# set context_params-> yarn_ext_factor  #} p $ _yarnExtFactor  cps
+    {# set context_params-> yarn_attn_factor  #} p $ _yarnAttnFactor  cps
+    {# set context_params-> yarn_beta_fast  #} p $ _yarnBetaFast  cps
+    {# set context_params-> yarn_beta_slow  #} p $ _yarnBetaSlow  cps
+    {# set context_params-> yarn_orig_ctx  #} p $ fromIntegral $ _yarnOrigCtx  cps
+    {# set context_params-> type_k  #} p $ _typeK  cps
+    {# set context_params-> type_v  #} p $ _typeV  cps
+    {# set context_params-> mul_mat_q  #} p $ _mulMatQ  cps
+    {# set context_params-> logits_all  #} p $ _logitsAll  cps
+    {# set context_params-> embedding  #} p $ _embedding  cps
+    {# set context_params-> offload_kqv  #} p $ _offloadKqv  cps
+    -- {# set context_params->n_gpu_layers #} p $ fromIntegral $ _nGpuLayers cps
+    -- {# set context_params->main_gpu #} p $ fromIntegral $ _mainGpu cps
+    -- {# set context_params->tensor_split #} p $ _tensorSplit cps
+    -- {# set context_params->progress_callback #} p $ _progressCallback cps
+    -- {# set context_params->progress_callback_user_data #} p $ _progressCallbackUserData cps
+    -- {# set context_params->low_vram #} p $ _lowVRAM cps
+    -- {# set context_params->f16_kv #} p $ _f16KV cps
+    -- {# set context_params->logits_all #} p $ _logitsAll cps
+    -- {# set context_params->vocab_only #} p $ _vocabOnly cps
+    -- {# set context_params->use_mmap #} p $ _useMmap cps
+    -- {# set context_params->use_mlock #} p $ _useMlock cps
+    -- {# set context_params->embedding #} p $ _embedding cps
  
 
 --
@@ -266,6 +358,9 @@ maxDevices = {# call max_devices #}
 contextDefaultParams :: ContextParamsPtr -> IO ()
 contextDefaultParams = {# call wrapper_context_default_params #}
 
+modelDefaultParams :: ModelParamsPtr -> IO ()
+modelDefaultParams = {# call wrapper_model_default_params #}
+
 
 --
 -- LLAMA_API struct llama_model_quantize_params llama_model_quantize_default_params();
@@ -319,9 +414,9 @@ timeUs = {# call time_us #}
 --
 -- Can't pass structs by value via FFI, so wrote a wrapper:
 --
-loadModelFromFile :: Ptr CChar -> ContextParamsPtr -> IO Model
-loadModelFromFile modelPath ctxParamsPtr =
-  {# call wrapper_load_model_from_file #} modelPath (castPtr ctxParamsPtr)
+loadModelFromFile :: Ptr CChar -> ModelParamsPtr -> IO Model
+loadModelFromFile modelPath modelParamsPtr =
+  {# call wrapper_load_model_from_file #} modelPath (castPtr modelParamsPtr)
 
 
 --
@@ -339,7 +434,7 @@ freeModel = {# call free_model #}
 
 newContextWithModel :: Model -> ContextParamsPtr -> IO (Context)
 newContextWithModel model ctxParamsPtr =
-  {# call new_context_with_model #} model (castPtr ctxParamsPtr)
+  {# call wrapper_new_context_with_model #} model (castPtr ctxParamsPtr)
 
 
 --
@@ -369,7 +464,7 @@ modelQuantize = {# call model_quantize #}
 --                   const char * path_base_model,
 --                          int   n_threads);
 --
-modelApplyLoraFromFile :: Model -> Ptr CChar -> Ptr CChar -> CInt -> IO CInt
+modelApplyLoraFromFile :: Model -> Ptr CChar -> CFloat -> Ptr CChar -> CInt -> IO CInt
 modelApplyLoraFromFile = {# call model_apply_lora_from_file #}
 
 
@@ -444,7 +539,7 @@ saveSessionFile = {# call save_session_file #}
 --                          int   n_past,
 --                          int   n_threads);
 --
-eval :: Context -> Ptr Token -> CInt -> CInt -> CInt -> IO CInt
+eval :: Context -> Ptr CInt -> CInt -> CInt -> IO CInt
 eval = {# call eval #}
 
 
@@ -457,20 +552,8 @@ eval = {# call eval #}
 --                          int   n_past,
 --                          int   n_threads);
 --
-evalEmbd :: Context -> Ptr CFloat -> CInt -> CInt -> CInt -> IO CInt
+evalEmbd :: Context -> Ptr CFloat -> CInt -> CInt -> IO CInt
 evalEmbd = {# call eval_embd #}
-
-
---
--- // Export a static computation graph for context of 511 and batch size of 1
--- // NOTE: since this functionality is mostly for debugging and demonstration purposes, we hardcode these
--- //       parameters here to keep things simple
--- // IMPORTANT: do not use for anything else other than debugging and testing!
--- LLAMA_API int llama_eval_export(struct llama_context * ctx, const char * fname);
---
-evalExport :: Context -> Ptr CChar -> IO CInt
-evalExport = {# call eval_export #}
-
 
 --
 -- // Convert the provided text into tokens.
@@ -485,23 +568,20 @@ evalExport = {# call eval_export #}
 --                          int   n_max_tokens,
 --                         bool   add_bos);
 --
-tokenize :: Context -> Ptr CChar -> Ptr Token -> CInt -> CUChar -> IO CInt
+tokenize :: Model
+                -> Ptr CChar
+                -> CInt
+                -> Ptr CInt
+                -> CInt
+                -> CUChar
+                -> CUChar
+                -> IO CInt
 tokenize = {# call tokenize #}
-
--- LLAMA_API int llama_tokenize_with_model(
---     const struct llama_model * model,
---                   const char * text,
---                  llama_token * tokens,
---                          int   n_max_tokens,
---                         bool   add_bos);
-tokenizeWithModel :: Model -> Ptr CChar -> Ptr Token -> CInt -> CUChar -> IO CInt
-tokenizeWithModel = {# call tokenize_with_model #}
-
 
 --
 -- LLAMA_API int llama_n_vocab(const struct llama_context * ctx);
 --
-nVocab :: Context -> IO CInt
+nVocab :: Model -> IO CInt
 nVocab = {# call n_vocab #}
 
 --
@@ -513,42 +593,8 @@ nCtx = {# call n_ctx #}
 --
 -- LLAMA_API int llama_n_embd (const struct llama_context * ctx);
 --
-nEmbd :: Context -> IO CInt
+nEmbd :: Model -> IO CInt
 nEmbd = {# call n_embd #}
-
-
---
--- LLAMA_API int llama_n_vocab_from_model(const struct llama_model * model);
---
-nVocabFromModel :: Model -> IO CInt
-nVocabFromModel = {# call n_vocab_from_model #}
-
---
--- LLAMA_API int llama_n_ctx_from_model  (const struct llama_model * model);
---
-nCtxFromModel :: Model -> IO CInt
-nCtxFromModel = {# call n_ctx_from_model #}
-
-
---
--- LLAMA_API int llama_n_embd_from_model (const struct llama_model * model);
---
-nEmbdFromModel :: Model -> IO CInt
-nEmbdFromModel = {# call n_embd_from_model #}
-
-
---
--- // Get the vocabulary as output parameters.
--- // Returns number of results.
--- LLAMA_API int llama_get_vocab(
---         const struct llama_context * ctx,
---                       const char * * strings,
---                              float * scores,
---                                int   capacity);
---
-getVocab :: Context -> Ptr (Ptr CChar) -> Ptr CFloat -> CInt -> IO CInt
-getVocab = {# call get_vocab #}
-
 
 --
 -- // Token logits obtained from the last call to llama_eval()
@@ -560,7 +606,6 @@ getVocab = {# call get_vocab #}
 --
 getLogits :: Context -> IO (Ptr CFloat)
 getLogits = {# call llama_get_logits #}
-
 
 --
 -- // Get the embeddings for the input
@@ -575,37 +620,30 @@ getEmbeddings = {# call llama_get_embeddings #}
 -- // Token Id -> String. Uses the vocabulary in the provided context
 -- LLAMA_API const char * llama_token_to_str(const struct llama_context * ctx, llama_token token);
 --
-tokenToStr :: Context -> Token -> IO (Ptr CChar)
-tokenToStr = {# call token_to_str #}
-
-
--- LLAMA_API const char * llama_token_to_str_with_model(
---           const struct llama_model * model,
---                        llama_token   token);
-tokenToStrWithModel :: Model -> Token -> IO (Ptr CChar)
-tokenToStrWithModel = {# call token_to_str_with_model #}
+tokenToPiece :: Model -> Token -> Ptr CChar -> CInt -> IO CInt
+tokenToPiece = {# call token_to_piece #}
 
 
 -- // Special tokens
 
 --
--- LLAMA_API llama_token llama_token_bos();  // beginning-of-sentence
+-- LLAMA_API llama_token llama_token_bos(const struct llama_model * model);  // beginning-of-sentence
 --
-tokenBos :: IO Token
+tokenBos :: Model -> IO Token
 tokenBos = {# call token_bos #}
 
 
 --
--- LLAMA_API llama_token llama_token_eos();  // end-of-sentence
+-- LLAMA_API llama_token llama_token_eos(const struct llama_model * model);  // end-of-sentence
 --
-tokenEos :: IO Token
+tokenEos :: Model -> IO Token
 tokenEos = {# call token_eos #}
 
 
 --
--- LLAMA_API llama_token llama_token_nl();   // next-line
+-- LLAMA_API llama_token llama_token_nl(const struct llama_model * model);   // next-line
 --
-tokenNl :: IO Token
+tokenNl :: Model -> IO Token
 tokenNl = {# call token_nl #}
 
 
@@ -613,19 +651,10 @@ tokenNl = {# call token_nl #}
 
 --
 -- /// @details Repetition penalty described in CTRL academic paper https://arxiv.org/abs/1909.05858, with negative logit fix.
--- LLAMA_API void llama_sample_repetition_penalty(struct llama_context * ctx, llama_token_data_array * candidates, const llama_token * last_tokens, size_t last_tokens_size, float penalty);
+-- LLAMA_API void llama_sample_repetition_penalty(struct llama_context * ctx, llama_token_data_array * candidates, const llama_token * last_tokens, size_t last_tokens_size, float penalty, float penalty_freq);
 --
-sampleRepetitionPenalty :: Context -> Ptr TokenDataArray -> Ptr Token -> CULong -> CFloat -> IO ()
-sampleRepetitionPenalty = {# call sample_repetition_penalty #}
-
-
---
--- /// @details Frequency and presence penalties described in OpenAI API https://platform.openai.com/docs/api-reference/parameter-details.
--- LLAMA_API void llama_sample_frequency_and_presence_penalties(struct llama_context * ctx, llama_token_data_array * candidates, const llama_token * last_tokens, size_t last_tokens_size, float alpha_frequency, float alpha_presence);
---
-sampleFrequencyAndPresencePenalties
-  :: Context -> Ptr TokenDataArray -> Ptr Token -> CULong -> CFloat -> CFloat -> IO ()
-sampleFrequencyAndPresencePenalties = {# call sample_frequency_and_presence_penalties #} 
+sampleRepetitionPenalties :: Context -> Ptr TokenDataArray -> Ptr Token -> CULong -> CFloat -> CFloat -> CFloat -> IO ()
+sampleRepetitionPenalties = {# call sample_repetition_penalties #}
 
 
 -- /// @details Apply classifier-free guidance to the logits as described in academic paper "Stay on topic with Classifier-Free Guidance" https://arxiv.org/abs/2306.17806
