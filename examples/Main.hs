@@ -44,7 +44,7 @@ import System.IO (hFlush, stdout)
 
 data Params = Params
   { _nCtx :: Int
-  , _nThreads :: CInt
+  , _nThreads :: Int
   , _nPredict :: Int
   , _nGpuLayers :: Int
   , _enableNumaOpts :: Bool
@@ -329,22 +329,25 @@ main = do
       -- todo
       -- putStrLn "\ndefault model quantize params"
 
-      cpp <- malloc
+      putStrLn "\ninit model & context params"
       mpp <- malloc
-      putStrLn "\ninit context params"
-      L.contextDefaultParams cpp
       L.modelDefaultParams mpp
+      modelParams' <- peek mpp
+
+      cpp <- malloc
+      L.contextDefaultParams cpp
       ctxParams' <- peek cpp
 
       let
+        modelParams = modelParams'
+          { L._nGpuLayers = _nGpuLayers params'
+          }
         ctxParams = ctxParams'
-          { L._seed = 1234
-          --, L._nCtx = 2048
-          --, L._nBatch = 2048
-          --, L._nThreads = 2
-          --, L._nThreadsBatch = 2
+          { L._nCtx = _nCtx params'
+          , L._nThreads = _nThreads params'
           }
 
+      poke mpp modelParams
       poke cpp ctxParams
 
       putStrLn "\nloading model"

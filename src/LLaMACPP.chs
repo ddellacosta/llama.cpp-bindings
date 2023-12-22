@@ -131,7 +131,7 @@ type ProgressCallback = CFloat -> Ptr () -> IO ()
 --         bool use_mlock;  // force system to keep model in RAM
 --     };
 data ModelParams = ModelParams
-    { _nGpuLayers :: Word32
+    { _nGpuLayers :: Int
     , _mainGpu :: Word32
     , _tensorSplit :: Ptr CFloat
     , _progressCallback :: FunPtr ProgressCallback
@@ -194,7 +194,7 @@ data ContextParams = ContextParams
   { _seed :: Word32
   , _nCtx :: Int
   , _nBatch :: Int
-  , _nThreads :: Word32
+  , _nThreads :: Int
   , _nThreadsBatch :: Word32
   , _ropeScalingType :: Word8
   , _ropeFreqBase :: CFloat
